@@ -17,7 +17,8 @@ app.use(express.json()); // Allows parsing of JSON request body
 // --- CORS Configuration ---
 const allowedOrigins = [
   "http://localhost:5173",
-  "192.168.20.12:5173", // Your frontend development URL
+  "192.168.20.12:5173",
+  "https://follow-up-unit.web.app", // Your frontend development URL
   // Add your production frontend domain here when you deploy! e.g., 'https://your-production-app.com'
 ];
 
