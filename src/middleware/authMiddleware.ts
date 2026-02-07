@@ -1,7 +1,6 @@
 import type { Request, Response, NextFunction } from "express";
 import jwt from "jsonwebtoken";
 
-// Extend the Request object to include user data
 export interface AuthenticatedRequest extends Request {
   userId?: string;
   role?: "user" | "admin";
@@ -13,13 +12,16 @@ export const authenticateToken = (
   next: NextFunction
 ) => {
   const authHeader = req.headers["authorization"];
-  const token = authHeader && authHeader.split(" ")[1]; // Expects "Bearer TOKEN"
+  const token = authHeader && authHeader.split(" ")[1];
 
-  if (token == null) return res.sendStatus(401); // No token
+  if (token == null) {
+    return res.status(401).json({ message: "Authentication token required." });
+  }
 
-  jwt.verify(token, process.env.JWT_SECRET as string, (err, user) => {
-    if (err) return res.sendStatus(403); // Invalid token
-    // The 'user' object is what you encoded in the token (e.g., { id, role })
+  jwt.verify(token, process.env.JWT_SECRET!, (err, user) => {
+    if (err) {
+      return res.status(403).json({ message: "Invalid or expired token." });
+    }
     const payload = user as { id: string; role: "user" | "admin" };
     req.userId = payload.id;
     req.role = payload.role;
@@ -27,7 +29,6 @@ export const authenticateToken = (
   });
 };
 
-// Middleware to check for Admin role
 export const isAdmin = (
   req: AuthenticatedRequest,
   res: Response,

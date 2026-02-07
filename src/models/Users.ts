@@ -37,9 +37,10 @@ const UserSchema: Schema = new Schema(
     role: { type: String, enum: ["user", "admin"], default: "user" },
   },
   {
-    // Adding timestamps is a standard best practice for auditing
     timestamps: true,
   }
 );
+
+// email and googleId indexes are auto-created via unique: true in schema
 
 export default mongoose.model<IUser>("User", UserSchema);

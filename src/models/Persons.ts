@@ -20,6 +20,11 @@ const PersonSchema: Schema = new Schema(
     createdBy: { type: Schema.Types.ObjectId, ref: "User", required: true },
   },
   { timestamps: true }
-); // Useful for tracking creation time
+);
+
+PersonSchema.index({ createdBy: 1 });
+PersonSchema.index({ name: 1 });
+PersonSchema.index({ phone: 1 });
+PersonSchema.index({ createdBy: 1, createdAt: -1 });
 
 export default mongoose.model<IPerson>("Person", PersonSchema);

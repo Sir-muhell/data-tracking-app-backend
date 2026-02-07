@@ -19,6 +19,11 @@ const WeeklyReportSchema: Schema = new Schema(
   { timestamps: true }
 );
 
+WeeklyReportSchema.index({ person: 1 });
+WeeklyReportSchema.index({ reportedBy: 1 });
+WeeklyReportSchema.index({ weekOf: -1 });
+WeeklyReportSchema.index({ person: 1, weekOf: -1 });
+
 export default mongoose.model<IWeeklyReport>(
   "WeeklyReport",
   WeeklyReportSchema
