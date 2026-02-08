@@ -37,25 +37,44 @@ export const startKeepAlive = () => {
       const url = new URL("/health", serverUrl);
       const client = url.protocol === "https:" ? https : http;
 
-      const req = client.get(url.toString(), (res) => {
+      const req = client.get(url.toString(), {
+        timeout: 10000, // Increased to 10 seconds
+      }, (res) => {
         const statusCode = res.statusCode || 0;
         if (statusCode === 200) {
           logger.debug("Keep-alive ping successful", { timestamp: new Date().toISOString() });
         } else {
           logger.warn("Keep-alive ping returned non-200 status", { statusCode });
         }
+        res.on("data", () => {}); // Consume response data
+        res.on("end", () => {}); // Response fully consumed
       });
 
       req.on("error", (err) => {
-        logger.error("Keep-alive ping failed", { error: err.message });
+        logger.warn("Keep-alive ping failed", { 
+          error: err.message,
+          code: (err as any).code,
+          url: serverUrl 
+        });
       });
 
-      req.setTimeout(5000, () => {
+      req.on("timeout", () => {
         req.destroy();
-        logger.warn("Keep-alive ping timeout");
+        logger.warn("Keep-alive ping timeout", { 
+          url: serverUrl,
+          timeout: "10s"
+        });
+      });
+
+      req.on("close", () => {
+        // Request closed (either success or failure)
       });
     } catch (err: any) {
-      logger.error("Keep-alive ping error", { error: err.message, stack: err.stack });
+      logger.error("Keep-alive ping error", { 
+        error: err.message, 
+        stack: err.stack,
+        url: serverUrl 
+      });
     }
   };
 
