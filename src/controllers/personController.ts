@@ -908,13 +908,13 @@ export const bulkCreatePersons = async (
     }
 
     // Validate all user IDs exist
-    const validUsers = await Users.find({ _id: { $in: userIds } });
+    const validUsers = await Users.find({ _id: { $in: userIds } }).lean();
     if (validUsers.length !== userIds.length) {
       return res.status(400).json({ message: "One or more user IDs are invalid." });
     }
 
     // Create user map for distribution info
-    const userMap = new Map(validUsers.map(u => [u._id.toString(), u.username]));
+    const userMap = new Map(validUsers.map((u: any) => [u._id.toString(), u.username]));
 
     // Distribute contacts evenly among selected users
     const totalContacts = contacts.length;
