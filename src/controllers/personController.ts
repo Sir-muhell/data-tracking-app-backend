@@ -308,34 +308,127 @@ export const getUserStatistics = async (
     const totalContacts = await Person.countDocuments({ createdBy: userId });
     
     // Only count reports where the person still exists
-    const validPersonIds = await Person.find({ createdBy: userId }).distinct("_id");
+    const validPersons = await Person.find({ createdBy: userId }).select("_id createdAt").lean() as unknown as Array<{ _id: mongoose.Types.ObjectId; createdAt: Date }>;
+    const validPersonIds = validPersons.map(p => p._id);
     const totalReports = await WeeklyReport.countDocuments({ 
       reportedBy: userId,
       person: { $in: validPersonIds }
     });
     
-    const contactedCount = await WeeklyReport.countDocuments({
+    // Helper function to get Monday of a week
+    const getMondayOfWeek = (date: Date): Date => {
+      const d = new Date(date);
+      const day = d.getDay();
+      const diff = d.getDate() - day + (day === 0 ? -6 : 1);
+      const monday = new Date(d.setDate(diff));
+      monday.setHours(0, 0, 0, 0);
+      return monday;
+    };
+
+    // Helper function to get all weeks between two dates
+    const getWeeksBetween = (startDate: Date, endDate: Date): Date[] => {
+      const weeks: Date[] = [];
+      const start = getMondayOfWeek(startDate);
+      const end = getMondayOfWeek(endDate);
+      const current = new Date(start);
+      
+      while (current <= end) {
+        weeks.push(new Date(current));
+        current.setDate(current.getDate() + 7);
+      }
+      return weeks;
+    };
+
+    // Get current week (Monday)
+    const now = new Date();
+    const currentWeek = getMondayOfWeek(now);
+
+    // Calculate expected weeks for all contacts
+    let totalExpectedReports = 0;
+    const weekReportMap = new Map<string, { expected: number; actual: number }>();
+
+    for (const person of validPersons) {
+      const personCreatedAt = new Date(person.createdAt);
+      const personStartWeek = getMondayOfWeek(personCreatedAt);
+      const expectedWeeks = getWeeksBetween(personStartWeek, currentWeek);
+      
+      totalExpectedReports += expectedWeeks.length;
+
+      // Track expected reports per week
+      for (const week of expectedWeeks) {
+        const weekKey = week.toISOString().split('T')[0];
+        if (!weekReportMap.has(weekKey)) {
+          weekReportMap.set(weekKey, { expected: 0, actual: 0 });
+        }
+        const stats = weekReportMap.get(weekKey)!;
+        stats.expected += 1;
+      }
+    }
+
+    // Get actual reports grouped by week
+    const actualReports = await WeeklyReport.find({
       reportedBy: userId,
-      contacted: true,
       person: { $in: validPersonIds }
-    });
-    
-    const notContactedCount = totalReports - contactedCount;
+    })
+      .select("weekOf person")
+      .lean();
+
+    for (const report of actualReports) {
+      const weekOf = new Date(report.weekOf);
+      const weekKey = getMondayOfWeek(weekOf).toISOString().split('T')[0];
+      if (weekReportMap.has(weekKey)) {
+        const stats = weekReportMap.get(weekKey)!;
+        stats.actual += 1;
+      }
+    }
+
+    // Calculate per-week statistics
+    const weekStats: Array<{ week: string; expected: number; actual: number; missing: number; completionRate: string }> = [];
+    let totalActualReports = 0;
+    let totalMissingReports = 0;
+
+    for (const [weekKey, stats] of weekReportMap.entries()) {
+      const missing = stats.expected - stats.actual;
+      const completionRate = stats.expected > 0 
+        ? ((stats.actual / stats.expected) * 100).toFixed(1)
+        : "0";
+      
+      weekStats.push({
+        week: weekKey,
+        expected: stats.expected,
+        actual: stats.actual,
+        missing,
+        completionRate,
+      });
+      
+      totalActualReports += stats.actual;
+      totalMissingReports += missing;
+    }
+
+    // Sort by week (newest first)
+    weekStats.sort((a, b) => new Date(b.week).getTime() - new Date(a.week).getTime());
+
+    // Calculate overall completion rate
+    const reportCompletionRate = totalExpectedReports > 0 
+      ? ((totalActualReports / totalExpectedReports) * 100).toFixed(1)
+      : "0";
+
+    // Get recent reports
+    const recentReports = await WeeklyReport.find({ 
+      reportedBy: userId,
+      person: { $in: validPersonIds }
+    })
+      .sort({ weekOf: -1, createdAt: -1 })
+      .limit(10)
+      .populate("person", "name")
+      .select("weekOf contacted person createdAt")
+      .lean();
 
     // Check for orphaned reports (reports without valid persons)
     const orphanedReportsCount = await WeeklyReport.countDocuments({
       reportedBy: userId,
       person: { $nin: validPersonIds }
     });
-
-    const recentReports = await WeeklyReport.find({ 
-      reportedBy: userId,
-      person: { $in: validPersonIds }
-    })
-      .sort({ weekOf: -1 })
-      .limit(5)
-      .populate("person", "name")
-      .select("weekOf contacted person");
 
     logger.debug("User statistics fetched", { 
       targetUserId: userId, 
@@ -351,14 +444,18 @@ export const getUserStatistics = async (
       statistics: {
         totalContacts,
         totalReports,
-        contactedCount,
-        notContactedCount,
-        contactRate: totalReports > 0 ? ((contactedCount / totalReports) * 100).toFixed(1) : "0",
+        totalExpectedReports,
+        totalActualReports,
+        totalMissingReports,
+        reportCompletionRate,
+        weeksTracked: weekStats.length,
       },
-      recentReports: recentReports.map((r) => ({
+      weekStats: weekStats.slice(0, 12), // Last 12 weeks
+      recentReports: recentReports.map((r: any) => ({
         weekOf: r.weekOf,
         contacted: r.contacted,
-        personName: (r.person as any)?.name || "Unknown",
+        personName: r.person?.name || "Unknown",
+        createdAt: r.createdAt,
       })),
     };
 
@@ -386,19 +483,154 @@ export const getAdminStatistics = async (
     const totalContacts = await Person.countDocuments();
     
     // Only count reports where the person still exists
-    const validPersonIds = await Person.find().distinct("_id");
+    const validPersons = await Person.find().select("_id createdAt createdBy").lean() as unknown as Array<{ _id: mongoose.Types.ObjectId; createdAt: Date; createdBy: mongoose.Types.ObjectId }>;
+    const validPersonIds = validPersons.map(p => p._id);
     const totalReports = await WeeklyReport.countDocuments({ 
       person: { $in: validPersonIds }
     });
     
-    const contactedCount = await WeeklyReport.countDocuments({ 
-      contacted: true,
+    // Helper function to get Monday of a week
+    const getMondayOfWeek = (date: Date): Date => {
+      const d = new Date(date);
+      const day = d.getDay();
+      const diff = d.getDate() - day + (day === 0 ? -6 : 1);
+      const monday = new Date(d.setDate(diff));
+      monday.setHours(0, 0, 0, 0);
+      return monday;
+    };
+
+    // Helper function to get all weeks between two dates
+    const getWeeksBetween = (startDate: Date, endDate: Date): Date[] => {
+      const weeks: Date[] = [];
+      const start = getMondayOfWeek(startDate);
+      const end = getMondayOfWeek(endDate);
+      const current = new Date(start);
+      
+      while (current <= end) {
+        weeks.push(new Date(current));
+        current.setDate(current.getDate() + 7);
+      }
+      return weeks;
+    };
+
+    // Get current week (Monday)
+    const now = new Date();
+    const currentWeek = getMondayOfWeek(now);
+
+    // Calculate expected weeks for all contacts
+    let totalExpectedReports = 0;
+    const weekReportMap = new Map<string, { expected: number; actual: number }>();
+
+    for (const person of validPersons) {
+      const personCreatedAt = new Date(person.createdAt);
+      const personStartWeek = getMondayOfWeek(personCreatedAt);
+      const expectedWeeks = getWeeksBetween(personStartWeek, currentWeek);
+      
+      totalExpectedReports += expectedWeeks.length;
+
+      // Track expected reports per week
+      for (const week of expectedWeeks) {
+        const weekKey = week.toISOString().split('T')[0];
+        if (!weekReportMap.has(weekKey)) {
+          weekReportMap.set(weekKey, { expected: 0, actual: 0 });
+        }
+        const stats = weekReportMap.get(weekKey)!;
+        stats.expected += 1;
+      }
+    }
+
+    // Get actual reports grouped by week
+    const actualReports = await WeeklyReport.find({
       person: { $in: validPersonIds }
-    });
-    const notContactedCount = totalReports - contactedCount;
+    })
+      .select("weekOf person")
+      .lean();
+
+    let totalActualReports = 0;
+    for (const report of actualReports) {
+      const weekOf = new Date(report.weekOf);
+      const weekKey = getMondayOfWeek(weekOf).toISOString().split('T')[0];
+      if (weekReportMap.has(weekKey)) {
+        const stats = weekReportMap.get(weekKey)!;
+        stats.actual += 1;
+        totalActualReports += 1;
+      }
+    }
+
+    // Calculate per-week statistics
+    const weekStats: Array<{ week: string; expected: number; actual: number; missing: number; completionRate: string }> = [];
+    let totalMissingReports = 0;
+
+    for (const [weekKey, stats] of weekReportMap.entries()) {
+      const missing = stats.expected - stats.actual;
+      const completionRate = stats.expected > 0 
+        ? ((stats.actual / stats.expected) * 100).toFixed(1)
+        : "0";
+      
+      weekStats.push({
+        week: weekKey,
+        expected: stats.expected,
+        actual: stats.actual,
+        missing,
+        completionRate,
+      });
+      
+      totalMissingReports += missing;
+    }
+
+    // Sort by week (newest first)
+    weekStats.sort((a, b) => new Date(b.week).getTime() - new Date(a.week).getTime());
+
+    // Calculate overall completion rate
+    const reportCompletionRate = totalExpectedReports > 0 
+      ? ((totalActualReports / totalExpectedReports) * 100).toFixed(1)
+      : "0";
 
     const usersWithContacts = await Person.distinct("createdBy");
     const activeUsersCount = usersWithContacts.length;
+
+    // Get users with their report completion stats (per week)
+    const usersWithReportStats = await Users.find({ _id: { $in: usersWithContacts } })
+      .select("username _id")
+      .lean();
+    
+    const userReportStats = await Promise.all(
+      usersWithReportStats.map(async (u: any) => {
+        const userPersons = await Person.find({ createdBy: u._id }).select("_id createdAt").lean() as unknown as Array<{ _id: mongoose.Types.ObjectId; createdAt: Date }>;
+        const userPersonIds = userPersons.map(p => p._id);
+        const userTotalContacts = userPersonIds.length;
+        
+        // Calculate expected vs actual for this user
+        let userExpected = 0;
+        let userActual = 0;
+        
+        for (const person of userPersons) {
+          const personCreatedAt = new Date(person.createdAt);
+          const personStartWeek = getMondayOfWeek(personCreatedAt);
+          const expectedWeeks = getWeeksBetween(personStartWeek, currentWeek);
+          userExpected += expectedWeeks.length;
+        }
+        
+        userActual = await WeeklyReport.countDocuments({
+          reportedBy: u._id,
+          person: { $in: userPersonIds }
+        });
+        
+        const userCompletionRate = userExpected > 0
+          ? ((userActual / userExpected) * 100).toFixed(1)
+          : "0";
+        
+        return {
+          userId: u._id.toString(),
+          username: u.username,
+          totalContacts: userTotalContacts,
+          expectedReports: userExpected,
+          actualReports: userActual,
+          missingReports: userExpected - userActual,
+          completionRate: userCompletionRate,
+        };
+      })
+    );
 
     const recentReports = await WeeklyReport.find({
       person: { $in: validPersonIds }
@@ -410,6 +642,12 @@ export const getAdminStatistics = async (
       .select("weekOf contacted person reportedBy createdAt")
       .lean();
 
+    // Get unique weeks with reports
+    const weeksWithReportsRaw = await WeeklyReport.distinct("weekOf", {
+      person: { $in: validPersonIds }
+    });
+    const weeksWithReports = (weeksWithReportsRaw as Date[]).sort((a: Date, b: Date) => b.getTime() - a.getTime());
+
     logger.debug("Admin statistics fetched", { userId: req.userId });
     res.status(200).json({
       statistics: {
@@ -417,10 +655,14 @@ export const getAdminStatistics = async (
         activeUsers: activeUsersCount,
         totalContacts,
         totalReports,
-        contactedCount,
-        notContactedCount,
-        contactRate: totalReports > 0 ? ((contactedCount / totalReports) * 100).toFixed(1) : "0",
+        totalExpectedReports,
+        totalActualReports,
+        totalMissingReports,
+        reportCompletionRate,
+        weeksTracked: weekStats.length,
       },
+      weekStats: weekStats.slice(0, 12), // Last 12 weeks
+      userReportStats,
       recentReports: recentReports.map((r: any) => ({
         weekOf: r.weekOf,
         contacted: r.contacted,
@@ -640,5 +882,117 @@ export const deleteWeeklyReport = async (
   } catch (err: any) {
     logger.error("Error deleting weekly report", { error: err.message, stack: err.stack, reportId, personId, userId: req.userId });
     res.status(500).json({ message: "Server error: Could not delete report." });
+  }
+};
+
+export const bulkCreatePersons = async (
+  req: AuthenticatedRequest,
+  res: Response
+) => {
+  // Only admin can bulk upload
+  if (req.role !== "admin") {
+    return res.status(403).json({ message: "Only admins can bulk upload contacts." });
+  }
+
+  try {
+    const { contacts, userIds } = req.body;
+
+    // Validate contacts array
+    if (!Array.isArray(contacts) || contacts.length === 0) {
+      return res.status(400).json({ message: "Contacts must be a non-empty array." });
+    }
+
+    // Validate userIds array
+    if (!Array.isArray(userIds) || userIds.length === 0) {
+      return res.status(400).json({ message: "At least one user must be selected." });
+    }
+
+    // Validate all user IDs exist
+    const validUsers = await Users.find({ _id: { $in: userIds } });
+    if (validUsers.length !== userIds.length) {
+      return res.status(400).json({ message: "One or more user IDs are invalid." });
+    }
+
+    // Create user map for distribution info
+    const userMap = new Map(validUsers.map(u => [u._id.toString(), u.username]));
+
+    // Distribute contacts evenly among selected users
+    const totalContacts = contacts.length;
+    const contactsPerUser = Math.floor(totalContacts / userIds.length);
+    const remainder = totalContacts % userIds.length;
+
+    // Create distribution plan
+    const distribution: Array<{ userId: string; username: string; contactCount: number }> = [];
+    const contactsByUser: Map<string, any[]> = new Map();
+
+    userIds.forEach((userId, index) => {
+      const startIndex = index * contactsPerUser + Math.min(index, remainder);
+      const endIndex = startIndex + contactsPerUser + (index < remainder ? 1 : 0);
+      const userContacts = contacts.slice(startIndex, endIndex);
+      contactsByUser.set(userId, userContacts);
+      distribution.push({
+        userId,
+        username: userMap.get(userId) || "Unknown",
+        contactCount: userContacts.length,
+      });
+    });
+
+    const results = {
+      success: [] as IPerson[],
+      failed: [] as Array<{ contact: any; error: string }>,
+    };
+
+    // Process contacts for each user
+    for (const [userId, userContacts] of contactsByUser.entries()) {
+      for (const contact of userContacts) {
+        const { error, value } = personSchema.validate(contact);
+        if (error) {
+          results.failed.push({
+            contact,
+            error: error.details[0].message,
+          });
+          continue;
+        }
+
+        try {
+          const newPerson: IPerson = new Person({
+            name: value.name,
+            phone: value.phone,
+            address: value.address,
+            inviter: value.inviter,
+            notes: value.notes || "",
+            createdBy: userId,
+          });
+          await newPerson.save();
+          results.success.push(newPerson);
+        } catch (err: any) {
+          results.failed.push({
+            contact,
+            error: err.message || "Failed to create contact",
+          });
+        }
+      }
+    }
+
+    logger.info("Bulk persons created", {
+      successCount: results.success.length,
+      failedCount: results.failed.length,
+      totalContacts,
+      selectedUsers: userIds.length,
+      uploadedBy: req.userId,
+    });
+
+    res.status(201).json({
+      message: `Successfully created ${results.success.length} contacts. ${results.failed.length} failed.`,
+      results,
+      distribution,
+    });
+  } catch (err: any) {
+    logger.error("Error bulk creating persons", {
+      error: err.message,
+      stack: err.stack,
+      userId: req.userId,
+    });
+    res.status(500).json({ message: "Server error: Could not bulk create contacts." });
   }
 };

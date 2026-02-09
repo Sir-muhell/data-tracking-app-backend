@@ -14,6 +14,7 @@ import {
   getUsersWithPeopleRecords,
   getUserStatistics,
   getAdminStatistics,
+  bulkCreatePersons,
 } from "../controllers/personController";
 import { authenticateToken, isAdmin } from "../middleware/authMiddleware";
 
@@ -42,6 +43,41 @@ const router = Router();
  *         description: Server error
  */
 router.post("/", authenticateToken, createPerson);
+
+/**
+ * @swagger
+ * /api/persons/bulk:
+ *   post:
+ *     summary: Bulk create persons and assign to users (admin only)
+ *     tags: [Persons]
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               contacts:
+ *                 type: array
+ *                 items:
+ *                   $ref: '#/components/schemas/Person'
+ *               userIds:
+ *                 type: array
+ *                 items:
+ *                   type: string
+ *     responses:
+ *       201:
+ *         description: Contacts created successfully
+ *       400:
+ *         description: Validation error
+ *       403:
+ *         description: Admin access required
+ *       500:
+ *         description: Server error
+ */
+router.post("/bulk", authenticateToken, isAdmin, bulkCreatePersons);
 
 /**
  * @swagger
