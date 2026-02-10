@@ -6,6 +6,7 @@ export interface IPerson extends Document {
   address: string;
   inviter: string;
   notes: string;
+  archived?: boolean;
   // Link to the user who created this person
   createdBy: mongoose.Schema.Types.ObjectId;
 }
@@ -17,12 +18,14 @@ const PersonSchema: Schema = new Schema(
     address: { type: String, required: true },
     inviter: { type: String, required: true },
     notes: { type: String, required: false },
+    archived: { type: Boolean, default: false },
     createdBy: { type: Schema.Types.ObjectId, ref: "User", required: true },
   },
   { timestamps: true }
 );
 
 PersonSchema.index({ createdBy: 1 });
+PersonSchema.index({ createdBy: 1, archived: 1 });
 PersonSchema.index({ name: 1 });
 PersonSchema.index({ phone: 1 });
 PersonSchema.index({ createdBy: 1, createdAt: -1 });

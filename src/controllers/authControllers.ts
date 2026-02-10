@@ -119,10 +119,9 @@ export const googleLogin = async (req: Request, res: Response) => {
     let user = await User.findOne({ $or: [{ googleId }, { email }] });
 
     if (!user) {
-      // Use email as username for new Google users to avoid duplicate-username collisions
-      let username = email;
+      let username = name || email;
       if (await User.findOne({ username })) {
-        username = `${email.split("@")[0]}_${googleId.slice(-8)}`;
+        username = `${(name || email.split("@")[0]).replace(/\s+/g, "_")}_${googleId.slice(-8)}`;
       }
       user = new User({
         username,

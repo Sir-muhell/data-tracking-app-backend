@@ -15,6 +15,10 @@ import {
   getUserStatistics,
   getAdminStatistics,
   bulkCreatePersons,
+  exportContactsAndReports,
+  archivePerson,
+  unarchivePerson,
+  archiveContactsByDateRange,
 } from "../controllers/personController";
 import { authenticateToken, isAdmin } from "../middleware/authMiddleware";
 
@@ -228,6 +232,8 @@ router.put("/:id", authenticateToken, updatePerson);
  *         description: Person not found
  */
 router.delete("/:id", authenticateToken, deletePerson);
+router.patch("/:id/archive", authenticateToken, isAdmin, archivePerson);
+router.patch("/:id/unarchive", authenticateToken, isAdmin, unarchivePerson);
 
 /**
  * @swagger
@@ -338,6 +344,18 @@ router.delete("/:personId/report/:reportId", authenticateToken, deleteWeeklyRepo
  *         description: Admin access required
  */
 router.get("/reports/all", authenticateToken, isAdmin, getAllReports);
+router.get(
+  "/admin/export",
+  authenticateToken,
+  isAdmin,
+  exportContactsAndReports
+);
+router.post(
+  "/admin/archive-by-date-range",
+  authenticateToken,
+  isAdmin,
+  archiveContactsByDateRange
+);
 router.get(
   "/admin/users/list",
   authenticateToken,

@@ -10,6 +10,8 @@ import {
 import Users from "../models/Users";
 import logger from "../utils/logger";
 
+const NOT_ARCHIVED = { archived: { $ne: true } };
+
 export const createPerson = async (
   req: AuthenticatedRequest,
   res: Response
@@ -49,8 +51,10 @@ export const getPersons = async (req: AuthenticatedRequest, res: Response) => {
     const skip = (page - 1) * limit;
     const sort: any = { [sortBy]: sortOrder };
 
-    let query = req.role === "admin" ? {} : { createdBy: req.userId };
-    let countQuery = req.role === "admin" ? {} : { createdBy: req.userId };
+    const includeArchived = req.query.includeArchived === "true" && req.role === "admin";
+    const archiveFilter = includeArchived ? {} : NOT_ARCHIVED;
+    let query = req.role === "admin" ? { ...archiveFilter } : { createdBy: req.userId, ...archiveFilter };
+    let countQuery = req.role === "admin" ? { ...archiveFilter } : { createdBy: req.userId, ...archiveFilter };
 
     const total = await Person.countDocuments(countQuery);
     const persons = await Person.find(query)
@@ -87,12 +91,13 @@ export const addWeeklyReport = async (
   if (error) {
     return res.status(400).json({ message: error.details[0].message });
   }
-  const { contacted, response, weekOf } = value;
+  const { contacted, response, weekOf, attendedService } = value;
 
   try {
     const person = await Person.findOne({
       _id: personId,
       createdBy: req.userId,
+      ...NOT_ARCHIVED,
     });
 
     if (!person) {
@@ -106,6 +111,7 @@ export const addWeeklyReport = async (
       contacted,
       response,
       weekOf,
+      attendedService: attendedService ?? false,
       reportedBy: req.userId,
     });
 
@@ -256,8 +262,11 @@ export const getPeopleByUserAdmin = async (
     const skip = (page - 1) * limit;
     const sort: any = { [sortBy]: sortOrder };
 
-    const total = await Person.countDocuments({ createdBy: userId });
-    const people = await Person.find({ createdBy: userId })
+    const includeArchived = req.query.includeArchived === "true";
+    const personQuery = { createdBy: userId, ...(includeArchived ? {} : NOT_ARCHIVED) };
+
+    const total = await Person.countDocuments(personQuery);
+    const people = await Person.find(personQuery)
       .select("-__v -createdBy")
       .sort(sort)
       .skip(skip)
@@ -305,10 +314,10 @@ export const getUserStatistics = async (
       return res.status(404).json({ message: "User not found." });
     }
 
-    const totalContacts = await Person.countDocuments({ createdBy: userId });
+    const totalContacts = await Person.countDocuments({ createdBy: userId, ...NOT_ARCHIVED });
     
-    // Only count reports where the person still exists
-    const validPersons = await Person.find({ createdBy: userId }).select("_id createdAt").lean() as unknown as Array<{ _id: mongoose.Types.ObjectId; createdAt: Date }>;
+    // Only count reports where the person still exists and is not archived
+    const validPersons = await Person.find({ createdBy: userId, ...NOT_ARCHIVED }).select("_id createdAt").lean() as unknown as Array<{ _id: mongoose.Types.ObjectId; createdAt: Date }>;
     const validPersonIds = validPersons.map(p => p._id);
     const totalReports = await WeeklyReport.countDocuments({ 
       reportedBy: userId,
@@ -421,8 +430,20 @@ export const getUserStatistics = async (
       .sort({ weekOf: -1, createdAt: -1 })
       .limit(10)
       .populate("person", "name")
-      .select("weekOf contacted person createdAt")
+      .select("weekOf contacted attendedService person createdAt")
       .lean();
+
+    // Attendance statistics
+    const totalAttendances = await WeeklyReport.countDocuments({
+      reportedBy: userId,
+      person: { $in: validPersonIds },
+      attendedService: true,
+    });
+    const contactsWithAttendance = await WeeklyReport.distinct("person", {
+      reportedBy: userId,
+      person: { $in: validPersonIds },
+      attendedService: true,
+    });
 
     // Check for orphaned reports (reports without valid persons)
     const orphanedReportsCount = await WeeklyReport.countDocuments({
@@ -449,11 +470,14 @@ export const getUserStatistics = async (
         totalMissingReports,
         reportCompletionRate,
         weeksTracked: weekStats.length,
+        totalAttendances,
+        contactsWithAtLeastOneAttendance: contactsWithAttendance.length,
       },
       weekStats: weekStats.slice(0, 12), // Last 12 weeks
       recentReports: recentReports.map((r: any) => ({
         weekOf: r.weekOf,
         contacted: r.contacted,
+        attendedService: r.attendedService,
         personName: r.person?.name || "Unknown",
         createdAt: r.createdAt,
       })),
@@ -480,10 +504,10 @@ export const getAdminStatistics = async (
 ) => {
   try {
     const totalUsers = await Users.countDocuments();
-    const totalContacts = await Person.countDocuments();
+    const totalContacts = await Person.countDocuments(NOT_ARCHIVED);
     
-    // Only count reports where the person still exists
-    const validPersons = await Person.find().select("_id createdAt createdBy").lean() as unknown as Array<{ _id: mongoose.Types.ObjectId; createdAt: Date; createdBy: mongoose.Types.ObjectId }>;
+    // Only count reports where the person still exists and is not archived
+    const validPersons = await Person.find(NOT_ARCHIVED).select("_id createdAt createdBy").lean() as unknown as Array<{ _id: mongoose.Types.ObjectId; createdAt: Date; createdBy: mongoose.Types.ObjectId }>;
     const validPersonIds = validPersons.map(p => p._id);
     const totalReports = await WeeklyReport.countDocuments({ 
       person: { $in: validPersonIds }
@@ -586,7 +610,7 @@ export const getAdminStatistics = async (
       ? ((totalActualReports / totalExpectedReports) * 100).toFixed(1)
       : "0";
 
-    const usersWithContacts = await Person.distinct("createdBy");
+    const usersWithContacts = await Person.distinct("createdBy", NOT_ARCHIVED);
     const activeUsersCount = usersWithContacts.length;
 
     // Get users with their report completion stats (per week)
@@ -596,7 +620,7 @@ export const getAdminStatistics = async (
     
     const userReportStats = await Promise.all(
       usersWithReportStats.map(async (u: any) => {
-        const userPersons = await Person.find({ createdBy: u._id }).select("_id createdAt").lean() as unknown as Array<{ _id: mongoose.Types.ObjectId; createdAt: Date }>;
+        const userPersons = await Person.find({ createdBy: u._id, ...NOT_ARCHIVED }).select("_id createdAt").lean() as unknown as Array<{ _id: mongoose.Types.ObjectId; createdAt: Date }>;
         const userPersonIds = userPersons.map(p => p._id);
         const userTotalContacts = userPersonIds.length;
         
@@ -642,6 +666,16 @@ export const getAdminStatistics = async (
       .select("weekOf contacted person reportedBy createdAt")
       .lean();
 
+    // Attendance statistics
+    const totalAttendances = await WeeklyReport.countDocuments({
+      person: { $in: validPersonIds },
+      attendedService: true,
+    });
+    const contactsWithAttendance = await WeeklyReport.distinct("person", {
+      person: { $in: validPersonIds },
+      attendedService: true,
+    });
+
     // Get unique weeks with reports
     const weeksWithReportsRaw = await WeeklyReport.distinct("weekOf", {
       person: { $in: validPersonIds }
@@ -660,12 +694,15 @@ export const getAdminStatistics = async (
         totalMissingReports,
         reportCompletionRate,
         weeksTracked: weekStats.length,
+        totalAttendances,
+        contactsWithAtLeastOneAttendance: contactsWithAttendance.length,
       },
       weekStats: weekStats.slice(0, 12), // Last 12 weeks
       userReportStats,
       recentReports: recentReports.map((r: any) => ({
         weekOf: r.weekOf,
         contacted: r.contacted,
+        attendedService: r.attendedService,
         personName: r.person?.name || "Unknown",
         reportedBy: r.reportedBy?.username || "Unknown",
         createdAt: r.createdAt,
@@ -801,8 +838,8 @@ export const updateWeeklyReport = async (
 
     const person =
       req.role === "admin"
-        ? await Person.findById(personId)
-        : await Person.findOne({ _id: personId, createdBy: req.userId });
+        ? await Person.findOne({ _id: personId, ...NOT_ARCHIVED })
+        : await Person.findOne({ _id: personId, createdBy: req.userId, ...NOT_ARCHIVED });
 
     if (!person) {
       return res
@@ -825,10 +862,11 @@ export const updateWeeklyReport = async (
         .json({ message: "Report not found or unauthorized." });
     }
 
-    const { contacted, response, weekOf } = value;
+    const { contacted, response, weekOf, attendedService } = value;
     report.contacted = contacted;
     report.response = response;
     report.weekOf = weekOf;
+    if (typeof attendedService === "boolean") report.attendedService = attendedService;
 
     await report.save();
     logger.info("Weekly report updated", { reportId, personId, userId: req.userId });
@@ -852,8 +890,8 @@ export const deleteWeeklyReport = async (
 
     const person =
       req.role === "admin"
-        ? await Person.findById(personId)
-        : await Person.findOne({ _id: personId, createdBy: req.userId });
+        ? await Person.findOne({ _id: personId, ...NOT_ARCHIVED })
+        : await Person.findOne({ _id: personId, createdBy: req.userId, ...NOT_ARCHIVED });
 
     if (!person) {
       return res
@@ -994,5 +1032,275 @@ export const bulkCreatePersons = async (
       userId: req.userId,
     });
     res.status(500).json({ message: "Server error: Could not bulk create contacts." });
+  }
+};
+
+/** Escape a CSV field (wrap in quotes if contains comma, newline, or quote) */
+function escapeCsvField(val: string | undefined | null): string {
+  if (val == null) return "";
+  const s = String(val);
+  if (s.includes(",") || s.includes("\n") || s.includes('"')) {
+    return `"${s.replace(/"/g, '""')}"`;
+  }
+  return s;
+}
+
+export const exportContactsAndReports = async (
+  req: AuthenticatedRequest,
+  res: Response
+) => {
+  if (req.role !== "admin") {
+    return res.status(403).json({ message: "Admin access required." });
+  }
+
+  const startDate = req.query.startDate as string;
+  const endDate = req.query.endDate as string;
+
+  if (!startDate || !endDate) {
+    return res.status(400).json({
+      message: "Both startDate and endDate query parameters are required (ISO format, e.g. 2025-01-01).",
+    });
+  }
+
+  const start = new Date(startDate);
+  const end = new Date(endDate);
+
+  if (isNaN(start.getTime()) || isNaN(end.getTime())) {
+    return res.status(400).json({
+      message: "Invalid date format. Use ISO format (YYYY-MM-DD).",
+    });
+  }
+
+  if (start > end) {
+    return res.status(400).json({
+      message: "startDate must be before or equal to endDate.",
+    });
+  }
+
+  try {
+    const includeArchived = req.query.includeArchived === "true";
+    const archiveFilter = includeArchived ? {} : NOT_ARCHIVED;
+    const allContacts = await Person.find(archiveFilter)
+      .populate("createdBy", "username")
+      .sort({ name: 1 })
+      .lean();
+
+    const reportsInRange = await WeeklyReport.find({
+      weekOf: { $gte: start, $lte: end },
+    })
+      .sort({ weekOf: 1 })
+      .lean();
+
+    const reportsByPerson = new Map<string, any[]>();
+    for (const r of reportsInRange) {
+      const pid = (r as any).person?.toString?.() ?? (r as any).person;
+      if (pid) {
+        if (!reportsByPerson.has(pid)) reportsByPerson.set(pid, []);
+        reportsByPerson.get(pid)!.push(r);
+      }
+    }
+
+    const headers = [
+      "Contact Name",
+      "Phone",
+      "Address",
+      "Inviter",
+      "Notes",
+      "Assigned To",
+      "Reports",
+    ];
+
+    const rows: string[] = [];
+    for (const contact of allContacts) {
+      const c = contact as any;
+      const assignedTo = c.createdBy?.username ?? "";
+      const personReports = reportsByPerson.get(c._id.toString()) ?? [];
+
+      const reportsText =
+        personReports.length > 0
+          ? personReports
+              .map((r: any) => {
+                const weekOf = r.weekOf ? new Date(r.weekOf).toISOString().split("T")[0] : "";
+                const contacted = r.contacted ? "Yes" : "No";
+                const attended = r.attendedService ? "Yes" : "No";
+                return `${weekOf}: Contacted ${contacted} | Attended: ${attended} - ${r.response || ""}`;
+              })
+              .join("\n")
+          : "";
+
+      rows.push(
+        [
+          escapeCsvField(c.name),
+          escapeCsvField(c.phone),
+          escapeCsvField(c.address),
+          escapeCsvField(c.inviter),
+          escapeCsvField(c.notes),
+          escapeCsvField(assignedTo),
+          escapeCsvField(reportsText),
+        ].join(",")
+      );
+    }
+
+    const csv = [headers.join(","), ...rows].join("\n");
+    const filename = `contacts-reports-${startDate}-to-${endDate}.csv`;
+
+    res.setHeader("Content-Type", "text/csv; charset=utf-8");
+    res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
+    res.send(csv);
+
+    logger.info("Admin export downloaded", {
+      startDate,
+      endDate,
+      contactCount: allContacts.length,
+      reportCount: reportsInRange.length,
+      adminUserId: req.userId,
+    });
+  } catch (err: any) {
+    logger.error("Error exporting contacts and reports", {
+      error: err.message,
+      stack: err.stack,
+      userId: req.userId,
+    });
+    res.status(500).json({ message: "Server error: Could not export data." });
+  }
+};
+
+export const archivePerson = async (
+  req: AuthenticatedRequest,
+  res: Response
+) => {
+  if (req.role !== "admin") {
+    return res.status(403).json({ message: "Admin access required." });
+  }
+
+  const { id } = req.params;
+
+  try {
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(400).json({ message: "Invalid Person ID format." });
+    }
+
+    const person = await Person.findByIdAndUpdate(
+      id,
+      { archived: true },
+      { new: true }
+    );
+
+    if (!person) {
+      return res.status(404).json({ message: "Person not found." });
+    }
+
+    logger.info("Contact archived", { personId: id, adminUserId: req.userId });
+    res.json({ message: "Contact archived successfully.", person });
+  } catch (err: any) {
+    logger.error("Error archiving person", {
+      error: err.message,
+      stack: err.stack,
+      personId: id,
+      userId: req.userId,
+    });
+    res.status(500).json({ message: "Server error: Could not archive contact." });
+  }
+};
+
+export const unarchivePerson = async (
+  req: AuthenticatedRequest,
+  res: Response
+) => {
+  if (req.role !== "admin") {
+    return res.status(403).json({ message: "Admin access required." });
+  }
+
+  const { id } = req.params;
+
+  try {
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(400).json({ message: "Invalid Person ID format." });
+    }
+
+    const person = await Person.findByIdAndUpdate(
+      id,
+      { archived: false },
+      { new: true }
+    );
+
+    if (!person) {
+      return res.status(404).json({ message: "Person not found." });
+    }
+
+    logger.info("Contact unarchived", { personId: id, adminUserId: req.userId });
+    res.json({ message: "Contact unarchived successfully.", person });
+  } catch (err: any) {
+    logger.error("Error unarchiving person", {
+      error: err.message,
+      stack: err.stack,
+      personId: id,
+      userId: req.userId,
+    });
+    res.status(500).json({ message: "Server error: Could not unarchive contact." });
+  }
+};
+
+export const archiveContactsByDateRange = async (
+  req: AuthenticatedRequest,
+  res: Response
+) => {
+  if (req.role !== "admin") {
+    return res.status(403).json({ message: "Admin access required." });
+  }
+
+  const startDate = req.body.startDate ?? req.query.startDate;
+  const endDate = req.body.endDate ?? req.query.endDate;
+
+  if (!startDate || !endDate) {
+    return res.status(400).json({
+      message: "Both startDate and endDate are required (ISO format, e.g. 2025-01-01).",
+    });
+  }
+
+  const start = new Date(startDate);
+  const end = new Date(endDate);
+
+  if (isNaN(start.getTime()) || isNaN(end.getTime())) {
+    return res.status(400).json({
+      message: "Invalid date format. Use ISO format (YYYY-MM-DD).",
+    });
+  }
+
+  if (start > end) {
+    return res.status(400).json({
+      message: "startDate must be before or equal to endDate.",
+    });
+  }
+
+  try {
+    end.setHours(23, 59, 59, 999);
+
+    const result = await Person.updateMany(
+      {
+        createdAt: { $gte: start, $lte: end },
+        ...NOT_ARCHIVED,
+      },
+      { $set: { archived: true } }
+    );
+
+    logger.info("Contacts archived by date range", {
+      startDate,
+      endDate,
+      modifiedCount: result.modifiedCount,
+      adminUserId: req.userId,
+    });
+
+    res.json({
+      message: `Successfully archived ${result.modifiedCount} contact(s).`,
+      archivedCount: result.modifiedCount,
+    });
+  } catch (err: any) {
+    logger.error("Error archiving contacts by date range", {
+      error: err.message,
+      stack: err.stack,
+      userId: req.userId,
+    });
+    res.status(500).json({ message: "Server error: Could not archive contacts." });
   }
 };

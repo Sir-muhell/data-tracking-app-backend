@@ -42,6 +42,10 @@ export const weeklyReportSchema = Joi.object({
     .messages({
       "boolean.base": "Contacted status must be a boolean value.",
     }),
+  attendedService: Joi.boolean().optional().default(false)
+    .messages({
+      "boolean.base": "Attended service must be a boolean value.",
+    }),
   response: Joi.string().trim().required().min(1).max(2000)
     .messages({
       "string.min": "Response cannot be empty.",
