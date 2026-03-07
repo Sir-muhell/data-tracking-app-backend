@@ -18,6 +18,7 @@ import {
   exportContactsAndReports,
   archivePerson,
   unarchivePerson,
+  reassignContact,
   archiveContactsByDateRange,
 } from "../controllers/personController";
 import { authenticateToken, isAdmin } from "../middleware/authMiddleware";
@@ -234,6 +235,7 @@ router.put("/:id", authenticateToken, updatePerson);
 router.delete("/:id", authenticateToken, deletePerson);
 router.patch("/:id/archive", authenticateToken, isAdmin, archivePerson);
 router.patch("/:id/unarchive", authenticateToken, isAdmin, unarchivePerson);
+router.patch("/:id/reassign", authenticateToken, isAdmin, reassignContact);
 
 /**
  * @swagger

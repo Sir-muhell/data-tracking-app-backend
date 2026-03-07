@@ -6,6 +6,7 @@ import { AuthenticatedRequest } from "../middleware/authMiddleware";
 import {
   personSchema,
   weeklyReportSchema,
+  reassignContactSchema,
 } from "../validation/personValidation";
 import Users from "../models/Users";
 import logger from "../utils/logger";
@@ -1445,6 +1446,67 @@ export const unarchivePerson = async (
     res
       .status(500)
       .json({ message: "Server error: Could not unarchive contact." });
+  }
+};
+
+export const reassignContact = async (
+  req: AuthenticatedRequest,
+  res: Response,
+) => {
+  if (req.role !== "admin") {
+    return res.status(403).json({ message: "Admin access required." });
+  }
+
+  const { id } = req.params;
+
+  const { error, value } = reassignContactSchema.validate(req.body);
+  if (error) {
+    return res.status(400).json({ message: error.details[0].message });
+  }
+  const { assignedToUserId } = value;
+
+  try {
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(400).json({ message: "Invalid Person ID format." });
+    }
+    if (!mongoose.Types.ObjectId.isValid(assignedToUserId)) {
+      return res.status(400).json({ message: "Invalid assigned user ID." });
+    }
+
+    const newOwner = await Users.findById(assignedToUserId).select("_id username");
+    if (!newOwner) {
+      return res.status(404).json({ message: "Assigned user not found." });
+    }
+
+    const person = await Person.findByIdAndUpdate(
+      id,
+      { createdBy: assignedToUserId },
+      { new: true },
+    ).populate("createdBy", "username");
+
+    if (!person) {
+      return res.status(404).json({ message: "Person not found." });
+    }
+
+    logger.info("Contact reassigned", {
+      personId: id,
+      assignedToUserId,
+      adminUserId: req.userId,
+    });
+    res.json({
+      message: "Contact reassigned successfully.",
+      person,
+    });
+  } catch (err: any) {
+    logger.error("Error reassigning contact", {
+      error: err.message,
+      stack: err.stack,
+      personId: id,
+      userId: req.userId,
+    });
+    res
+      .status(500)
+      .json({ message: "Server error: Could not reassign contact." });
   }
 };
 

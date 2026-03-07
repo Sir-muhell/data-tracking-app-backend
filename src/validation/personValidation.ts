@@ -37,6 +37,15 @@ export const personSchema = Joi.object({
     }),
 });
 
+export const reassignContactSchema = Joi.object({
+  assignedToUserId: Joi.string()
+    .trim()
+    .required()
+    .messages({
+      "string.empty": "Assigned user is required.",
+    }),
+});
+
 export const weeklyReportSchema = Joi.object({
   contacted: Joi.boolean().required()
     .messages({
