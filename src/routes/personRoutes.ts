@@ -11,6 +11,8 @@ import {
   getAllReports,
   getReportsByPersonId,
   getPeopleByUserAdmin,
+  getBatchOverviewForAdmin,
+  getBatchOverviewForCurrentUser,
   getUsersWithPeopleRecords,
   getUserStatistics,
   getAdminStatistics,
@@ -131,6 +133,12 @@ router.post("/bulk", authenticateToken, isAdmin, bulkCreatePersons);
  *                   $ref: '#/components/schemas/Pagination'
  */
 router.get("/", authenticateToken, getPersons);
+
+router.get(
+  "/batch-overview",
+  authenticateToken,
+  getBatchOverviewForCurrentUser,
+);
 
 /**
  * @swagger
@@ -363,6 +371,12 @@ router.get(
   authenticateToken,
   isAdmin,
   getUsersWithPeopleRecords
+);
+router.get(
+  "/admin/users/:userId/batch-overview",
+  authenticateToken,
+  isAdmin,
+  getBatchOverviewForAdmin
 );
 router.get(
   "/admin/users/:userId",

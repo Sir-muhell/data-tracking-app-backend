@@ -71,7 +71,22 @@ export const getPersons = async (req: AuthenticatedRequest, res: Response) => {
       .populate("createdBy", "username")
       .sort(sort)
       .skip(skip)
-      .limit(limit);
+      .limit(limit)
+      .lean();
+
+    const personIds = persons.map((p: any) => p._id);
+    const reportCounts = await WeeklyReport.aggregate([
+      { $match: { person: { $in: personIds } } },
+      { $group: { _id: "$person", count: { $sum: 1 } } },
+    ]);
+    const countByPersonId = new Map<string, number>();
+    for (const row of reportCounts) {
+      countByPersonId.set(row._id.toString(), row.count);
+    }
+    const personsWithCount = persons.map((p: any) => ({
+      ...p,
+      reportCount: countByPersonId.get(p._id.toString()) ?? 0,
+    }));
 
     const totalPages = Math.ceil(total / limit);
 
@@ -83,7 +98,7 @@ export const getPersons = async (req: AuthenticatedRequest, res: Response) => {
       role: req.role,
     });
     res.json({
-      data: persons,
+      data: personsWithCount,
       pagination: {
         page,
         limit,
@@ -355,6 +370,167 @@ export const getPeopleByUserAdmin = async (
     res
       .status(500)
       .json({ message: "Server error: Could not fetch people records." });
+  }
+};
+
+type BatchOverviewResult =
+  | { ok: true; items: { person: unknown; reports: unknown[] }[] }
+  | { ok: false; status: number; message: string };
+
+async function resolveBatchOverview(
+  targetUserId: string,
+  personIdsRaw: string | undefined,
+): Promise<BatchOverviewResult> {
+  if (!mongoose.Types.ObjectId.isValid(targetUserId)) {
+    return { ok: false, status: 400, message: "Invalid User ID format." };
+  }
+
+  if (!personIdsRaw || !personIdsRaw.trim()) {
+    return {
+      ok: false,
+      status: 400,
+      message:
+        "personIds query parameter is required (comma-separated IDs).",
+    };
+  }
+
+  const personIdStrings = [
+    ...new Set(
+      personIdsRaw
+        .split(",")
+        .map((s) => s.trim())
+        .filter(Boolean),
+    ),
+  ];
+  const personObjectIds: mongoose.Types.ObjectId[] = [];
+  for (const id of personIdStrings) {
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return { ok: false, status: 400, message: `Invalid person ID: ${id}` };
+    }
+    personObjectIds.push(new mongoose.Types.ObjectId(id));
+  }
+
+  if (personObjectIds.length === 0) {
+    return {
+      ok: false,
+      status: 400,
+      message: "At least one valid person ID is required.",
+    };
+  }
+
+  const persons = await Person.find({
+    _id: { $in: personObjectIds },
+    createdBy: targetUserId,
+  })
+    .select("-__v")
+    .lean();
+
+  if (persons.length !== personObjectIds.length) {
+    return {
+      ok: false,
+      status: 404,
+      message:
+        "One or more contacts were not found or do not belong to this user.",
+    };
+  }
+
+  const reports = await WeeklyReport.find({
+    person: { $in: personObjectIds },
+  })
+    .sort({ weekOf: -1, createdAt: -1 })
+    .populate("reportedBy", "username")
+    .lean();
+
+  const reportsByPerson = new Map<string, any[]>();
+  for (const r of reports) {
+    const pid = (r as any).person?.toString?.() ?? String((r as any).person);
+    if (!reportsByPerson.has(pid)) reportsByPerson.set(pid, []);
+    reportsByPerson.get(pid)!.push(r);
+  }
+
+  const order = new Map(personIdStrings.map((id, i) => [id, i]));
+  persons.sort(
+    (a: any, b: any) =>
+      (order.get(a._id.toString()) ?? 0) - (order.get(b._id.toString()) ?? 0),
+  );
+
+  const items = persons.map((p: any) => ({
+    person: p,
+    reports: reportsByPerson.get(p._id.toString()) ?? [],
+  }));
+
+  return { ok: true, items };
+}
+
+/**
+ * Current user: batch overview for their own contacts (same payload as admin route).
+ */
+export const getBatchOverviewForCurrentUser = async (
+  req: AuthenticatedRequest,
+  res: Response,
+) => {
+  const personIdsRaw = req.query.personIds as string | undefined;
+
+  try {
+    const result = await resolveBatchOverview(req.userId!, personIdsRaw);
+    if (!result.ok) {
+      return res.status(result.status).json({ message: result.message });
+    }
+
+    logger.debug("Batch overview fetched (current user)", {
+      contactCount: result.items.length,
+      userId: req.userId,
+    });
+
+    res.status(200).json({ items: result.items });
+  } catch (err: any) {
+    logger.error("Error fetching batch overview", {
+      error: err.message,
+      stack: err.stack,
+      userId: req.userId,
+    });
+    res
+      .status(500)
+      .json({ message: "Server error: Could not fetch batch overview." });
+  }
+};
+
+/**
+ * Admin: for a list of person IDs (contacts of a user), return each contact with all their weekly reports.
+ */
+export const getBatchOverviewForAdmin = async (
+  req: AuthenticatedRequest,
+  res: Response,
+) => {
+  if (req.role !== "admin") {
+    return res.status(403).json({ message: "Admin access required." });
+  }
+
+  const { userId } = req.params;
+  const personIdsRaw = req.query.personIds as string | undefined;
+
+  try {
+    const result = await resolveBatchOverview(userId, personIdsRaw);
+    if (!result.ok) {
+      return res.status(result.status).json({ message: result.message });
+    }
+
+    logger.debug("Batch overview fetched", {
+      targetUserId: userId,
+      contactCount: result.items.length,
+      adminUserId: req.userId,
+    });
+
+    res.status(200).json({ items: result.items });
+  } catch (err: any) {
+    logger.error("Error fetching batch overview", {
+      error: err.message,
+      stack: err.stack,
+      userId: req.userId,
+    });
+    res
+      .status(500)
+      .json({ message: "Server error: Could not fetch batch overview." });
   }
 };
 

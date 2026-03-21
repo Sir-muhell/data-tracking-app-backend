@@ -1,7 +1,7 @@
+import "dotenv/config";
 import express from "express";
 import cors, { CorsOptions } from "cors";
 import mongoose from "mongoose";
-import dotenv from "dotenv";
 import authRoutes from "./routes/authRoutes";
 import personRoutes from "./routes/personRoutes";
 import { validateEnv } from "./config/env";
@@ -11,8 +11,6 @@ import { requestLogger } from "./middleware/requestLogger";
 import logger from "./utils/logger";
 import swaggerUi from "swagger-ui-express";
 import swaggerSpec from "./config/swagger";
-
-dotenv.config();
 
 const env = validateEnv();
 
