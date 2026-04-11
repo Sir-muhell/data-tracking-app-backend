@@ -22,6 +22,7 @@ import {
   unarchivePerson,
   reassignContact,
   archiveContactsByDateRange,
+  getLeadershipQuarterlyReport,
 } from "../controllers/personController";
 import { authenticateToken, isAdmin } from "../middleware/authMiddleware";
 
@@ -395,6 +396,12 @@ router.get(
   authenticateToken,
   isAdmin,
   getAdminStatistics
+);
+router.get(
+  "/admin/reports/leadership-quarterly",
+  authenticateToken,
+  isAdmin,
+  getLeadershipQuarterlyReport
 );
 
 export default router;

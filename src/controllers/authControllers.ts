@@ -79,6 +79,7 @@ export const login = async (req: Request, res: Response) => {
         id: user._id,
         username: user.username,
         role: user.role,
+        ...(user.email ? { email: user.email } : {}),
       },
     });
     logger.info("User logged in successfully", { username: user.username, userId: user._id });
@@ -143,6 +144,7 @@ export const googleLogin = async (req: Request, res: Response) => {
         id: user._id,
         username: user.username,
         role: user.role,
+        ...(user.email ? { email: user.email } : {}),
       },
     });
     logger.info("Google login successful", { userId: user._id, email });

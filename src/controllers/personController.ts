@@ -10,6 +10,7 @@ import {
 } from "../validation/personValidation";
 import Users from "../models/Users";
 import logger from "../utils/logger";
+import { LEADERSHIP_QUARTERLY_REPORT_ADMIN_EMAIL } from "../config/leadershipReport";
 
 const NOT_ARCHIVED = { archived: { $ne: true } };
 
@@ -1016,6 +1017,341 @@ export const getAdminStatistics = async (
     res
       .status(500)
       .json({ message: "Server error: Could not fetch admin statistics." });
+  }
+};
+
+function leadershipGetMondayOfWeek(date: Date): Date {
+  const d = new Date(date.getTime());
+  const day = d.getDay();
+  const diff = d.getDate() - day + (day === 0 ? -6 : 1);
+  d.setDate(diff);
+  d.setHours(0, 0, 0, 0);
+  return d;
+}
+
+function leadershipWeeksBetween(startDate: Date, endDate: Date): Date[] {
+  const weeks: Date[] = [];
+  const start = leadershipGetMondayOfWeek(startDate);
+  const end = leadershipGetMondayOfWeek(endDate);
+  const current = new Date(start);
+  while (current.getTime() <= end.getTime()) {
+    weeks.push(new Date(current.getTime()));
+    current.setDate(current.getDate() + 7);
+  }
+  return weeks;
+}
+
+function leadershipQuarterBounds(year: number, quarter: number): {
+  quarterStart: Date;
+  quarterEnd: Date;
+} {
+  const quarterStart = new Date(year, (quarter - 1) * 3, 1);
+  quarterStart.setHours(0, 0, 0, 0);
+  const quarterEnd = new Date(year, quarter * 3, 0);
+  quarterEnd.setHours(23, 59, 59, 999);
+  return { quarterStart, quarterEnd };
+}
+
+function leadershipFormatPlainText(payload: {
+  period: { label: string; startDate: string; endDate: string };
+  scorecard: Record<string, string | number>;
+  byMonth: Array<{ monthLabel: string } & Record<string, string | number>>;
+  methodology: string[];
+}): string {
+  const { period, scorecard, byMonth, methodology } = payload;
+  const lines: string[] = [
+    `Follow-up — ${period.label}`,
+    `Reporting period: ${period.startDate} to ${period.endDate}`,
+    "",
+    "Executive summary",
+    "Add 2–4 sentences here for leadership (outcomes, priorities, asks).",
+    "",
+    "Scorecard",
+    `• Active contacts (non-archived, as of now): ${scorecard.activeContacts}`,
+    `• New contacts added in ${period.label}: ${scorecard.newContactsInQuarter}`,
+    `• Weekly reports filed: ${scorecard.weeklyReportsFiled} (${scorecard.followUpCompletionPercent}% of ${scorecard.expectedWeeklyReports} expected in-period)`,
+    `• Reports marked as contacted: ${scorecard.reportsContactedYes} (${scorecard.reportsContactedPercent}% of reports filed this quarter)`,
+    `• Service attendance (report rows): ${scorecard.attendanceYesTotal}; distinct people with ≥1 attendance: ${scorecard.distinctPeopleWithAttendance}`,
+    "",
+    "By month",
+  ];
+  for (const row of byMonth) {
+    lines.push(
+      `• ${row.monthLabel}: ${row.reportsFiled} reports filed; contacted ${row.contactedPercent}% of those rows; attendance ${row.attendanceYes} rows`,
+    );
+  }
+  lines.push("", "Methodology", ...methodology.map((m) => `• ${m}`));
+  return lines.join("\n");
+}
+
+/**
+ * Admin-only; further restricted to LEADERSHIP_QUARTERLY_REPORT_ADMIN_EMAIL.
+ */
+export const getLeadershipQuarterlyReport = async (
+  req: AuthenticatedRequest,
+  res: Response,
+) => {
+  if (req.role !== "admin") {
+    return res.status(403).json({ message: "Admin access required." });
+  }
+
+  try {
+    const adminUser = await Users.findById(req.userId)
+      .select("email role")
+      .lean();
+    if (!adminUser || adminUser.role !== "admin") {
+      return res.status(403).json({ message: "Admin access required." });
+    }
+    const email = (adminUser.email || "").trim().toLowerCase();
+    if (email !== LEADERSHIP_QUARTERLY_REPORT_ADMIN_EMAIL.toLowerCase()) {
+      return res.status(403).json({
+        message: "You do not have access to this report.",
+      });
+    }
+  } catch (err: any) {
+    logger.error("Leadership report access check failed", {
+      error: err.message,
+      userId: req.userId,
+    });
+    return res.status(500).json({ message: "Server error." });
+  }
+
+  const yearRaw = req.query.year as string | undefined;
+  const quarterRaw = req.query.quarter as string | undefined;
+  const format = (req.query.format as string) || "json";
+
+  const now = new Date();
+  const defaultYear = now.getFullYear();
+  const defaultQuarter = Math.floor(now.getMonth() / 3) + 1;
+
+  const year = yearRaw ? parseInt(yearRaw, 10) : defaultYear;
+  const quarter = quarterRaw ? parseInt(quarterRaw, 10) : defaultQuarter;
+
+  if (
+    !Number.isFinite(year) ||
+    year < 2000 ||
+    year > 2100 ||
+    !Number.isFinite(quarter) ||
+    quarter < 1 ||
+    quarter > 4
+  ) {
+    return res.status(400).json({
+      message:
+        "Invalid year or quarter. Use year=YYYY and quarter=1|2|3|4 (optional; defaults to current calendar quarter).",
+    });
+  }
+
+  const { quarterStart, quarterEnd } = leadershipQuarterBounds(year, quarter);
+  const periodLabel = `Q${quarter} ${year}`;
+  const startDateStr = quarterStart.toISOString().split("T")[0];
+  const endDateStr = quarterEnd.toISOString().split("T")[0];
+
+  try {
+    const validPersons = (await Person.find(NOT_ARCHIVED)
+      .select("_id createdAt")
+      .lean()) as unknown as Array<{
+      _id: mongoose.Types.ObjectId;
+      createdAt: Date;
+    }>;
+    const validPersonIds = validPersons.map((p) => p._id);
+
+    const weeksInQuarter = leadershipWeeksBetween(quarterStart, quarterEnd);
+    const weekKeySet = new Set(
+      weeksInQuarter.map((w) => w.toISOString().split("T")[0]),
+    );
+
+    let expectedWeeklyReports = 0;
+    for (const person of validPersons) {
+      const personMonday = leadershipGetMondayOfWeek(
+        new Date(person.createdAt),
+      );
+      for (const w of weeksInQuarter) {
+        if (personMonday.getTime() <= w.getTime()) {
+          expectedWeeklyReports += 1;
+        }
+      }
+    }
+
+    const reportsInQuarter = await WeeklyReport.find({
+      weekOf: { $gte: quarterStart, $lte: quarterEnd },
+      person: { $in: validPersonIds },
+    })
+      .select("weekOf contacted attendedService person reportedBy")
+      .lean();
+
+    let weeklyReportsFiled = 0;
+    let reportsContactedYes = 0;
+    let attendanceYesTotal = 0;
+    const attendancePeople = new Set<string>();
+
+    const monthBuckets: Record<
+      string,
+      { total: number; contactedYes: number; attendanceYes: number }
+    > = {};
+
+    for (const r of reportsInQuarter) {
+      const wk = leadershipGetMondayOfWeek(new Date((r as any).weekOf));
+      const key = wk.toISOString().split("T")[0];
+      if (!weekKeySet.has(key)) continue;
+
+      weeklyReportsFiled += 1;
+      if ((r as any).contacted) {
+        reportsContactedYes += 1;
+      }
+      if ((r as any).attendedService) {
+        attendanceYesTotal += 1;
+        attendancePeople.add((r as any).person.toString());
+      }
+
+      const d = new Date((r as any).weekOf);
+      const monthKey = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+      if (!monthBuckets[monthKey]) {
+        monthBuckets[monthKey] = {
+          total: 0,
+          contactedYes: 0,
+          attendanceYes: 0,
+        };
+      }
+      monthBuckets[monthKey].total += 1;
+      if ((r as any).contacted) monthBuckets[monthKey].contactedYes += 1;
+      if ((r as any).attendedService) {
+        monthBuckets[monthKey].attendanceYes += 1;
+      }
+    }
+
+    const followUpCompletionPercent =
+      expectedWeeklyReports > 0
+        ? ((weeklyReportsFiled / expectedWeeklyReports) * 100).toFixed(1)
+        : "0";
+
+    const reportsContactedPercent =
+      weeklyReportsFiled > 0
+        ? ((reportsContactedYes / weeklyReportsFiled) * 100).toFixed(1)
+        : "0";
+
+    const newContactsInQuarter = await Person.countDocuments({
+      ...NOT_ARCHIVED,
+      createdAt: { $gte: quarterStart, $lte: quarterEnd },
+    });
+
+    const activeContacts = validPersons.length;
+
+    const monthNames = [
+      "Jan",
+      "Feb",
+      "Mar",
+      "Apr",
+      "May",
+      "Jun",
+      "Jul",
+      "Aug",
+      "Sep",
+      "Oct",
+      "Nov",
+      "Dec",
+    ];
+
+    const byMonth = Object.keys(monthBuckets)
+      .sort()
+      .map((monthKey) => {
+        const b = monthBuckets[monthKey];
+        const contactedPercent =
+          b.total > 0 ? ((b.contactedYes / b.total) * 100).toFixed(1) : "0";
+        const [y, m] = monthKey.split("-").map(Number);
+        const monthLabel = `${monthNames[m - 1]} ${y}`;
+        return {
+          monthKey,
+          monthLabel,
+          reportsFiled: b.total,
+          contactedPercent,
+          attendanceYes: b.attendanceYes,
+        };
+      });
+
+    const byReporter = await WeeklyReport.aggregate([
+      {
+        $match: {
+          weekOf: { $gte: quarterStart, $lte: quarterEnd },
+          person: { $in: validPersonIds },
+        },
+      },
+      { $group: { _id: "$reportedBy", weeklyReportsFiled: { $sum: 1 } } },
+      { $sort: { weeklyReportsFiled: -1 } },
+    ]);
+
+    const reporterIds = byReporter.map((x) => x._id).filter(Boolean);
+    const reporterUsers = await Users.find({ _id: { $in: reporterIds } })
+      .select("username")
+      .lean();
+    const usernameById = new Map(
+      reporterUsers.map((u: any) => [u._id.toString(), u.username]),
+    );
+
+    const userContributions = byReporter.map((row: any) => ({
+      userId: row._id?.toString?.() ?? String(row._id),
+      username: usernameById.get(row._id.toString()) ?? "Unknown",
+      weeklyReportsFiled: row.weeklyReportsFiled,
+    }));
+
+    const methodology = [
+      "Expected weekly reports = for each non-archived contact, one report per week (Monday boundary) from the contact’s first week through each week that overlaps the calendar quarter, same convention as the admin dashboard.",
+      "Submitted reports counted here must fall on a week whose Monday is in that quarter and have week-of date within the quarter range.",
+      "Archived contacts are excluded from expected counts and from report totals.",
+      "Attendance is based on weekly report checkboxes, not a separate attendance system.",
+    ];
+
+    const scorecard = {
+      activeContacts,
+      newContactsInQuarter,
+      weeklyReportsFiled,
+      expectedWeeklyReports,
+      followUpCompletionPercent,
+      reportsContactedYes,
+      reportsContactedPercent,
+      attendanceYesTotal,
+      distinctPeopleWithAttendance: attendancePeople.size,
+    };
+
+    const payload = {
+      period: {
+        label: periodLabel,
+        startDate: startDateStr,
+        endDate: endDateStr,
+      },
+      scorecard,
+      byMonth,
+      userContributions,
+      methodology,
+    };
+
+    logger.debug("Leadership quarterly report generated", {
+      userId: req.userId,
+      periodLabel,
+    });
+
+    if (format === "text") {
+      const text = leadershipFormatPlainText({
+        period: payload.period,
+        scorecard: scorecard as unknown as Record<string, string | number>,
+        byMonth: byMonth as unknown as Array<
+          { monthLabel: string } & Record<string, string | number>
+        >,
+        methodology,
+      });
+      res.setHeader("Content-Type", "text/plain; charset=utf-8");
+      return res.send(text);
+    }
+
+    res.status(200).json(payload);
+  } catch (err: any) {
+    logger.error("Error building leadership quarterly report", {
+      error: err.message,
+      stack: err.stack,
+      userId: req.userId,
+    });
+    res
+      .status(500)
+      .json({ message: "Server error: Could not build quarterly report." });
   }
 };
 
