@@ -1,5 +1,6 @@
 import { Router } from "express";
-import { register, login, googleLogin } from "../controllers/authControllers";
+import { register, login, googleLogin, getMe } from "../controllers/authControllers";
+import { authenticateToken } from "../middleware/authMiddleware";
 
 const router = Router();
 
@@ -106,5 +107,16 @@ router.post("/login", login);
  *         description: Server error
  */
 router.post("/google/verify-token", googleLogin);
+
+/**
+ * @swagger
+ * /api/auth/me:
+ *   get:
+ *     summary: Current user (from DB; includes email when set)
+ *     tags: [Authentication]
+ *     security:
+ *       - bearerAuth: []
+ */
+router.get("/me", authenticateToken, getMe);
 
 export default router;

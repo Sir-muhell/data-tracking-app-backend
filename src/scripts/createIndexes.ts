@@ -25,6 +25,7 @@ async function createIndexes() {
     await WeeklyReport.collection.createIndex({ reportedBy: 1 });
     await WeeklyReport.collection.createIndex({ weekOf: -1 });
     await WeeklyReport.collection.createIndex({ person: 1, weekOf: -1 });
+    await WeeklyReport.collection.createIndex({ person: 1, contacted: 1 });
     console.log("WeeklyReport indexes created");
 
     console.log("Creating indexes for User model...");

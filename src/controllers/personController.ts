@@ -61,11 +61,110 @@ export const getPersons = async (req: AuthenticatedRequest, res: Response) => {
     const sort: any = { [sortBy]: sortOrder };
 
     const includeArchived =
-      req.query.includeArchived === "true" && req.role === "admin";
+      String(req.query.includeArchived || "").toLowerCase() === "true";
     const archiveFilter = includeArchived ? {} : NOT_ARCHIVED;
     // Everyone (including admins) sees only their own contacts on the main dashboard
     const query = { createdBy: req.userId, ...archiveFilter };
     const countQuery = { createdBy: req.userId, ...archiveFilter };
+
+    const neverContacted =
+      String(req.query.neverContacted || "").toLowerCase() === "true";
+
+    if (neverContacted) {
+      if (!mongoose.Types.ObjectId.isValid(req.userId!)) {
+        return res.status(400).json({ message: "Invalid user." });
+      }
+      const userOid = new mongoose.Types.ObjectId(req.userId!);
+      const personMatch: Record<string, unknown> = {
+        createdBy: userOid,
+        ...archiveFilter,
+      };
+
+      const pipeline: mongoose.PipelineStage[] = [
+        { $match: personMatch },
+        {
+          $lookup: {
+            from: WeeklyReport.collection.name,
+            let: { pid: "$_id" },
+            pipeline: [
+              {
+                $match: {
+                  $expr: {
+                    $and: [
+                      { $eq: ["$person", "$$pid"] },
+                      { $eq: ["$contacted", true] },
+                    ],
+                  },
+                },
+              },
+              { $limit: 1 },
+            ],
+            as: "_hadContactedTrue",
+          },
+        },
+        { $match: { _hadContactedTrue: { $size: 0 } } },
+        {
+          $facet: {
+            totalCount: [{ $count: "count" }],
+            pageIds: [
+              { $sort: sort },
+              { $skip: skip },
+              { $limit: limit },
+              { $project: { _id: 1 } },
+            ],
+          },
+        },
+      ];
+
+      const [aggRow] = await Person.aggregate(pipeline);
+      const total = aggRow?.totalCount?.[0]?.count ?? 0;
+      const idDocs = (aggRow?.pageIds ?? []) as Array<{ _id: mongoose.Types.ObjectId }>;
+      const orderedIds = idDocs.map((d) => d._id);
+
+      let personsWithCount: Array<Record<string, unknown>> = [];
+      if (orderedIds.length > 0) {
+        const persons = await Person.find({ _id: { $in: orderedIds } })
+          .populate("createdBy", "username")
+          .lean();
+        const orderMap = new Map(
+          orderedIds.map((id, i) => [id.toString(), i]),
+        );
+        persons.sort(
+          (a: any, b: any) =>
+            (orderMap.get(a._id.toString()) ?? 0) -
+            (orderMap.get(b._id.toString()) ?? 0),
+        );
+        const reportCounts = await WeeklyReport.aggregate([
+          { $match: { person: { $in: orderedIds } } },
+          { $group: { _id: "$person", count: { $sum: 1 } } },
+        ]);
+        const countByPersonId = new Map<string, number>();
+        for (const row of reportCounts) {
+          countByPersonId.set(row._id.toString(), row.count);
+        }
+        personsWithCount = persons.map((p: any) => ({
+          ...p,
+          reportCount: countByPersonId.get(p._id.toString()) ?? 0,
+        }));
+      }
+
+      const totalPages = Math.ceil(total / limit) || 0;
+      logger.debug("Persons fetched (neverContacted)", {
+        count: personsWithCount.length,
+        total,
+        page,
+        userId: req.userId,
+      });
+      return res.json({
+        data: personsWithCount,
+        pagination: {
+          page,
+          limit,
+          total,
+          totalPages,
+        },
+      });
+    }
 
     const total = await Person.countDocuments(countQuery);
     const persons = await Person.find(query)

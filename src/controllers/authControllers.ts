@@ -5,6 +5,7 @@ import User, { IUser } from "../models/Users";
 import { registerSchema, loginSchema } from "../validation/authValidation";
 import { OAuth2Client } from "google-auth-library";
 import logger from "../utils/logger";
+import type { AuthenticatedRequest } from "../middleware/authMiddleware";
 
 const client = process.env.GOOGLE_CLIENT_ID
   ? new OAuth2Client(process.env.GOOGLE_CLIENT_ID)
@@ -16,6 +17,38 @@ const generateToken = (user: IUser) => {
     process.env.JWT_SECRET!,
     { expiresIn: "1d" }
   );
+};
+
+/** Current user profile (hydrates email/role from DB for clients with stale localStorage). */
+export const getMe = async (req: AuthenticatedRequest, res: Response) => {
+  if (!req.userId) {
+    return res.status(401).json({ message: "Authentication token required." });
+  }
+
+  try {
+    const u = await User.findById(req.userId)
+      .select("username role email")
+      .lean();
+    if (!u) {
+      return res.status(404).json({ message: "User not found." });
+    }
+
+    const emailNorm = u.email
+      ? String(u.email).trim().toLowerCase()
+      : undefined;
+
+    res.json({
+      user: {
+        id: String(u._id),
+        username: u.username,
+        role: u.role,
+        ...(emailNorm ? { email: emailNorm } : {}),
+      },
+    });
+  } catch (err: any) {
+    logger.error("getMe error", { error: err.message, userId: req.userId });
+    res.status(500).json({ message: "Server error." });
+  }
 };
 
 export const register = async (req: Request, res: Response) => {
@@ -114,26 +147,42 @@ export const googleLogin = async (req: Request, res: Response) => {
     }
 
     const googleId = payload.sub;
-    const email = payload.email;
+    const emailRaw = payload.email;
+    const emailNormalized = emailRaw.trim().toLowerCase();
     const name = payload.name;
 
-    let user = await User.findOne({ $or: [{ googleId }, { email }] });
+    let user = await User.findOne({
+      $or: [{ googleId }, { email: emailRaw }, { email: emailNormalized }],
+    });
 
     if (!user) {
-      let username = name || email;
+      let username = name || emailRaw;
       if (await User.findOne({ username })) {
-        username = `${(name || email.split("@")[0]).replace(/\s+/g, "_")}_${googleId.slice(-8)}`;
+        username = `${(name || emailRaw.split("@")[0]).replace(/\s+/g, "_")}_${googleId.slice(-8)}`;
       }
       user = new User({
         username,
-        email: email,
+        email: emailNormalized,
         googleId: googleId,
         role: "user",
       });
       await user.save();
-    } else if (!user.googleId) {
-      user.googleId = googleId;
-      await user.save();
+    } else {
+      let needsSave = false;
+      if (!user.googleId) {
+        user.googleId = googleId;
+        needsSave = true;
+      }
+      if (
+        !user.email ||
+        String(user.email).toLowerCase() !== emailNormalized
+      ) {
+        user.email = emailNormalized;
+        needsSave = true;
+      }
+      if (needsSave) {
+        await user.save();
+      }
     }
 
     const token = generateToken(user);
@@ -144,10 +193,13 @@ export const googleLogin = async (req: Request, res: Response) => {
         id: user._id,
         username: user.username,
         role: user.role,
-        ...(user.email ? { email: user.email } : {}),
+        email: emailNormalized,
       },
     });
-    logger.info("Google login successful", { userId: user._id, email });
+    logger.info("Google login successful", {
+      userId: user._id,
+      email: emailNormalized,
+    });
   } catch (err: any) {
     logger.error("Google token verification error", {
       error: err.message,

@@ -118,6 +118,16 @@ router.post("/bulk", authenticateToken, isAdmin, bulkCreatePersons);
  *           type: string
  *           enum: [asc, desc]
  *           default: desc
+ *       - in: query
+ *         name: neverContacted
+ *         schema:
+ *           type: boolean
+ *         description: If true, only contacts with no weekly report where contacted is true
+ *       - in: query
+ *         name: includeArchived
+ *         schema:
+ *           type: boolean
+ *         description: If true, include archived contacts for the current user
  *     responses:
  *       200:
  *         description: List of persons
