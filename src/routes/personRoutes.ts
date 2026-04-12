@@ -122,7 +122,7 @@ router.post("/bulk", authenticateToken, isAdmin, bulkCreatePersons);
  *         name: neverContacted
  *         schema:
  *           type: boolean
- *         description: If true, only contacts with no weekly report where contacted is true
+ *         description: Admin only. If true, all org contacts with no weekly report where contacted is true
  *       - in: query
  *         name: includeArchived
  *         schema:

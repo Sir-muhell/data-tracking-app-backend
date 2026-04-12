@@ -14,6 +14,39 @@ import { LEADERSHIP_QUARTERLY_REPORT_ADMIN_EMAIL } from "../config/leadershipRep
 
 const NOT_ARCHIVED = { archived: { $ne: true } };
 
+/** Persons with no weekly report where contacted === true (same rule as GET /persons?neverContacted=true for admins). */
+async function countPersonsNeverMarkedContacted(
+  personMatch: Record<string, unknown>,
+): Promise<number> {
+  const pipeline: mongoose.PipelineStage[] = [
+    { $match: personMatch },
+    {
+      $lookup: {
+        from: WeeklyReport.collection.name,
+        let: { pid: "$_id" },
+        pipeline: [
+          {
+            $match: {
+              $expr: {
+                $and: [
+                  { $eq: ["$person", "$$pid"] },
+                  { $eq: ["$contacted", true] },
+                ],
+              },
+            },
+          },
+          { $limit: 1 },
+        ],
+        as: "_hadContactedTrue",
+      },
+    },
+    { $match: { _hadContactedTrue: { $size: 0 } } },
+    { $count: "count" },
+  ];
+  const [row] = await Person.aggregate(pipeline);
+  return (row as { count?: number } | undefined)?.count ?? 0;
+}
+
 export const createPerson = async (
   req: AuthenticatedRequest,
   res: Response,
@@ -71,12 +104,13 @@ export const getPersons = async (req: AuthenticatedRequest, res: Response) => {
       String(req.query.neverContacted || "").toLowerCase() === "true";
 
     if (neverContacted) {
-      if (!mongoose.Types.ObjectId.isValid(req.userId!)) {
-        return res.status(400).json({ message: "Invalid user." });
+      if (req.role !== "admin") {
+        return res.status(403).json({
+          message:
+            "The never-contacted filter is only available to administrators.",
+        });
       }
-      const userOid = new mongoose.Types.ObjectId(req.userId!);
       const personMatch: Record<string, unknown> = {
-        createdBy: userOid,
         ...archiveFilter,
       };
 
@@ -1081,6 +1115,19 @@ export const getAdminStatistics = async (
       (a: Date, b: Date) => b.getTime() - a.getTime(),
     );
 
+    const [neverMarkedContactedExcludingArchived, neverMarkedContactedIncludingArchived] =
+      await Promise.all([
+        countPersonsNeverMarkedContacted(NOT_ARCHIVED),
+        countPersonsNeverMarkedContacted({}),
+      ]);
+    const neverMarkedContactedShareOfActivePercent =
+      totalContacts > 0
+        ? (
+            (neverMarkedContactedExcludingArchived / totalContacts) *
+            100
+          ).toFixed(1)
+        : "0";
+
     logger.debug("Admin statistics fetched", { userId: req.userId });
     res.status(200).json({
       statistics: {
@@ -1095,6 +1142,9 @@ export const getAdminStatistics = async (
         weeksTracked: weekStats.length,
         totalAttendances,
         contactsWithAtLeastOneAttendance: contactsWithAttendance.length,
+        neverMarkedContactedExcludingArchived,
+        neverMarkedContactedIncludingArchived,
+        neverMarkedContactedShareOfActivePercent,
       },
       weekStats: weekStats.slice(0, 12), // Last 12 weeks
       userReportStats,
