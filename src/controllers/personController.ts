@@ -1425,7 +1425,12 @@ export const getLeadershipQuarterlyReport = async (
   const endDateStr = quarterEnd.toISOString().split("T")[0];
 
   try {
-    const validPersons = (await Person.find(NOT_ARCHIVED)
+    // Scope contacts to those that already existed by the end of this quarter.
+    // This prevents Q2/Q3-added contacts from appearing in a Q1 report's totals.
+    const validPersons = (await Person.find({
+      ...NOT_ARCHIVED,
+      createdAt: { $lte: quarterEnd },
+    })
       .select("_id createdAt")
       .lean()) as unknown as Array<{
       _id: mongoose.Types.ObjectId;
