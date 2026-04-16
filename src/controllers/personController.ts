@@ -1201,35 +1201,161 @@ function leadershipQuarterBounds(year: number, quarter: number): {
   return { quarterStart, quarterEnd };
 }
 
-function leadershipFormatPlainText(payload: {
+type LeadershipAudience = "church" | "unit";
+
+function churchLeadershipFormatPlainText(payload: {
   period: { label: string; startDate: string; endDate: string };
-  scorecard: Record<string, string | number>;
-  byMonth: Array<{ monthLabel: string } & Record<string, string | number>>;
-  methodology: string[];
+  totalContacts: number;
+  reachedPeople: number;
+  notReachedPeople: number;
+  reportsExpected: number;
+  reportsSubmittedCalls: number;
+  churchAttendees: number;
+  churchAttendeesFromReached: number;
 }): string {
-  const { period, scorecard, byMonth, methodology } = payload;
-  const lines: string[] = [
-    `Follow-up — ${period.label}`,
+  const {
+    period,
+    totalContacts,
+    reachedPeople,
+    notReachedPeople,
+    reportsExpected,
+    reportsSubmittedCalls,
+    churchAttendees,
+    churchAttendeesFromReached,
+  } = payload;
+
+  const missingReports = Math.max(0, reportsExpected - reportsSubmittedCalls);
+
+  // Simplified narrative for non-technical readers.
+  return [
+    `Church Leadership Follow-up Report — ${period.label}`,
     `Reporting period: ${period.startDate} to ${period.endDate}`,
     "",
-    "Executive summary",
-    "Add 2–4 sentences here for leadership (outcomes, priorities, asks).",
+    "Summary",
+    `• People to follow up with: ${totalContacts}`,
+    `• Reached (marked Contacted): ${reachedPeople}`,
+    `• Not reached at all: ${notReachedPeople}`,
+    `• Reports expected (weekly): ${reportsExpected}`,
+    `• Reports submitted: ${reportsSubmittedCalls} (missing ${missingReports})`,
+    `• People who came to church: ${churchAttendees}`,
+    `• Of the reached people, those who came to church: ${churchAttendeesFromReached}`,
     "",
-    "Scorecard",
-    `• Active contacts (non-archived, as of now): ${scorecard.activeContacts}`,
-    `• New contacts added in ${period.label}: ${scorecard.newContactsInQuarter}`,
-    `• Weekly reports filed: ${scorecard.weeklyReportsFiled} (${scorecard.followUpCompletionPercent}% of ${scorecard.expectedWeeklyReports} expected in-period)`,
-    `• Reports marked as contacted: ${scorecard.reportsContactedYes} (${scorecard.reportsContactedPercent}% of reports filed this quarter)`,
-    `• Service attendance (report rows): ${scorecard.attendanceYesTotal}; distinct people with ≥1 attendance: ${scorecard.distinctPeopleWithAttendance}`,
+    "Key observations",
+    `• We did not follow up with everyone in the follow-up list (reach gap: ${notReachedPeople}).`,
+    `• Weekly reporting was inconsistent (submitted ${reportsSubmittedCalls} of ${reportsExpected}).`,
+    `• Attendance remains low compared to the number of people reached.`,
     "",
-    "By month",
-  ];
-  for (const row of byMonth) {
+    "Focus for next quarter",
+    `• Reach everyone on the follow-up list (follow-up discipline).`,
+    `• Submit weekly reports consistently for every required week.`,
+    `• Encourage attendance after a contact is made (follow-up-to-attendance plan).`,
+  ].join("\n");
+}
+
+function unitHeadFormatPlainText(payload: {
+  period: { label: string; startDate: string; endDate: string };
+  totalContacts: number;
+  reportsExpected: number;
+  reportsSubmittedCalls: number;
+  reachedPeople: number;
+  noReachedPeople: number;
+  notCalledAtAllPeople: number;
+  attendedPeople: Array<{
+    name: string;
+    phone: string;
+    submittedByUsernames: string[];
+  }>;
+  noReachedPeopleDetail: Array<{
+    name: string;
+    phone: string;
+    reasons: string[];
+    submittedByUsernames: string[];
+  }>;
+  notCalledAtAllPeopleDetail: Array<{
+    name: string;
+    phone: string;
+  }>;
+}): string {
+  const {
+    period,
+    totalContacts,
+    reportsExpected,
+    reportsSubmittedCalls,
+    reachedPeople,
+    noReachedPeople,
+    notCalledAtAllPeople,
+    attendedPeople,
+    noReachedPeopleDetail,
+    notCalledAtAllPeopleDetail,
+  } = payload;
+
+  const missingReports = Math.max(0, reportsExpected - reportsSubmittedCalls);
+
+  const renderUserList = (names: string[]) =>
+    names.length ? names.join(", ") : "—";
+
+  const fmtPhone = (phone: string) => phone || "—";
+
+  const lines: string[] = [];
+
+  lines.push(
+    `Unit Head Detailed Follow-up Report — ${period.label}`,
+    `Reporting period: ${period.startDate} to ${period.endDate}`,
+    "",
+    "Totals (people vs reports)",
+    `• People to follow up with: ${totalContacts}`,
+    `• Reports submitted (weekly report entries): ${reportsSubmittedCalls}`,
+    `  Note: one person can create multiple report entries across weeks; reports submitted is not the same as the number of people called.`,
+    `• Expected reports (weekly): ${reportsExpected} (missing ${missingReports})`,
+    "",
+    "Contact status (people)",
+    `• Reached (marked Contacted): ${reachedPeople}`,
+    `• Called but not reached (switched off / no reachable): ${noReachedPeople}`,
+    `• Not called at all (no report entries in quarter): ${notCalledAtAllPeople}`,
+    "",
+    "People who came to church",
+  );
+
+  if (attendedPeople.length) {
     lines.push(
-      `• ${row.monthLabel}: ${row.reportsFiled} reports filed; contacted ${row.contactedPercent}% of those rows; attendance ${row.attendanceYes} rows`,
+      ...attendedPeople.map(
+        (p) =>
+          `• ${p.name} — ${fmtPhone(p.phone)} — Report submitted by: ${renderUserList(
+            p.submittedByUsernames,
+          )}`,
+      ),
     );
+  } else {
+    lines.push("• None recorded");
   }
-  lines.push("", "Methodology", ...methodology.map((m) => `• ${m}`));
+
+  lines.push("", "Called but not reached (switched off / no reachable)");
+
+  if (noReachedPeopleDetail.length) {
+    lines.push(
+      ...noReachedPeopleDetail.map((p) => {
+        const reasons = p.reasons.length ? p.reasons.join("; ") : "—";
+        return `• ${p.name} — ${fmtPhone(p.phone)} — Reasons: ${reasons} — Report submitted by: ${renderUserList(
+          p.submittedByUsernames,
+        )}`;
+      }),
+    );
+  } else {
+    lines.push("• None recorded");
+  }
+
+  lines.push("", "Not called at all");
+
+  if (notCalledAtAllPeopleDetail.length) {
+    lines.push(
+      ...notCalledAtAllPeopleDetail.map(
+        (p) => `• ${p.name} — ${fmtPhone(p.phone)}`,
+      ),
+    );
+  } else {
+    lines.push("• None recorded");
+  }
+
   return lines.join("\n");
 }
 
@@ -1268,6 +1394,9 @@ export const getLeadershipQuarterlyReport = async (
   const yearRaw = req.query.year as string | undefined;
   const quarterRaw = req.query.quarter as string | undefined;
   const format = (req.query.format as string) || "json";
+  const audienceRaw = (req.query.audience as string | undefined) || "church";
+  const audience: LeadershipAudience =
+    audienceRaw === "unit" ? "unit" : "church";
 
   const now = new Date();
   const defaultYear = now.getFullYear();
@@ -1325,13 +1454,20 @@ export const getLeadershipQuarterlyReport = async (
       weekOf: { $gte: quarterStart, $lte: quarterEnd },
       person: { $in: validPersonIds },
     })
-      .select("weekOf contacted attendedService person reportedBy")
+      .select("weekOf contacted attendedService person reportedBy response")
       .lean();
 
     let weeklyReportsFiled = 0;
     let reportsContactedYes = 0;
     let attendanceYesTotal = 0;
     const attendancePeople = new Set<string>();
+    const reachedPeople = new Set<string>();
+    const calledButNoReachedPeople = new Set<string>();
+    const anyReportPeople = new Set<string>();
+
+    const attendedReporterIdsByPerson = new Map<string, Set<string>>();
+    const noReachedReasonsByPerson = new Map<string, Set<string>>();
+    const noReachedReporterIdsByPerson = new Map<string, Set<string>>();
 
     const monthBuckets: Record<
       string,
@@ -1344,13 +1480,25 @@ export const getLeadershipQuarterlyReport = async (
       if (!weekKeySet.has(key)) continue;
 
       weeklyReportsFiled += 1;
+
+      const pid = (r as any).person.toString();
+      anyReportPeople.add(pid);
       if ((r as any).contacted) {
         reportsContactedYes += 1;
+        reachedPeople.add(pid);
+      } else {
+        calledButNoReachedPeople.add(pid);
       }
       if ((r as any).attendedService) {
-        attendanceYesTotal += 1;
-        attendancePeople.add((r as any).person.toString());
+        attendancePeople.add(pid);
+
+        const rid = (r as any).reportedBy?.toString?.() ?? String((r as any).reportedBy);
+        if (!attendedReporterIdsByPerson.has(pid)) {
+          attendedReporterIdsByPerson.set(pid, new Set());
+        }
+        attendedReporterIdsByPerson.get(pid)!.add(rid);
       }
+      if ((r as any).attendedService) attendanceYesTotal += 1;
 
       const d = new Date((r as any).weekOf);
       const monthKey = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
@@ -1365,6 +1513,21 @@ export const getLeadershipQuarterlyReport = async (
       if ((r as any).contacted) monthBuckets[monthKey].contactedYes += 1;
       if ((r as any).attendedService) {
         monthBuckets[monthKey].attendanceYes += 1;
+      }
+
+      // For the Unit Head report, capture reasons + reporters when the report indicates
+      // "not contacted" (contacted=false). We will later exclude anyone who attended.
+      if (!(r as any).contacted) {
+        const reason = String((r as any).response ?? "")
+          .trim()
+          .replace(/\s+/g, " ")
+          .slice(0, 160);
+        if (!noReachedReasonsByPerson.has(pid)) noReachedReasonsByPerson.set(pid, new Set());
+        if (reason) noReachedReasonsByPerson.get(pid)!.add(reason);
+
+        const rid = (r as any).reportedBy?.toString?.() ?? String((r as any).reportedBy);
+        if (!noReachedReporterIdsByPerson.has(pid)) noReachedReporterIdsByPerson.set(pid, new Set());
+        if (rid) noReachedReporterIdsByPerson.get(pid)!.add(rid);
       }
     }
 
@@ -1384,6 +1547,22 @@ export const getLeadershipQuarterlyReport = async (
     });
 
     const activeContacts = validPersons.length;
+
+    const reachedPeopleCount = reachedPeople.size;
+    const notReachedPeopleCount = Math.max(0, activeContacts - reachedPeopleCount);
+    const churchAttendeesCount = attendancePeople.size;
+    const churchAttendeesFromReached = new Set(
+      [...attendancePeople].filter((pid) => reachedPeople.has(pid)),
+    ).size;
+
+    const attendedPersonIds = new Set([...attendancePeople]);
+    const calledNoReachedPeopleIds = [...calledButNoReachedPeople].filter(
+      (pid) => !attendedPersonIds.has(pid),
+    );
+    const calledNoReachedPeopleCount = calledNoReachedPeopleIds.length;
+    const notCalledAtAllPeopleIds = (validPersons as any[])
+      .map((p: any) => p._id.toString())
+      .filter((pid: string) => !anyReportPeople.has(pid));
 
     const monthNames = [
       "Jan",
@@ -1479,13 +1658,94 @@ export const getLeadershipQuarterlyReport = async (
     });
 
     if (format === "text") {
-      const text = leadershipFormatPlainText({
+      if (audience === "church") {
+        const text = churchLeadershipFormatPlainText({
+          period: payload.period,
+          totalContacts: scorecard.activeContacts as number,
+          reachedPeople: reachedPeopleCount,
+          notReachedPeople: notReachedPeopleCount,
+          reportsExpected: scorecard.expectedWeeklyReports as number,
+          reportsSubmittedCalls: scorecard.weeklyReportsFiled as number,
+          churchAttendees: churchAttendeesCount,
+          churchAttendeesFromReached,
+        });
+        res.setHeader("Content-Type", "text/plain; charset=utf-8");
+        return res.send(text);
+      }
+
+      // audience === "unit"
+      const attendedPersonIds = [...attendancePeople];
+      const notCalledAtAllDetailIds = notCalledAtAllPeopleIds;
+
+      const [
+        attendedPersons,
+        calledNoReachedPersons,
+        notCalledAtAllPersons,
+        reporterIdsToFetch,
+      ] = await Promise.all([
+        Person.find({ _id: { $in: attendedPersonIds } }).select("name phone").lean(),
+        Person.find({ _id: { $in: calledNoReachedPeopleIds } }).select("name phone").lean(),
+        Person.find({ _id: { $in: notCalledAtAllDetailIds } }).select("name phone").lean(),
+        (async () => {
+          const ids = new Set<string>();
+          for (const pid of attendedPersonIds) {
+            for (const rid of attendedReporterIdsByPerson.get(pid) ?? []) ids.add(rid);
+          }
+          for (const pid of calledNoReachedPeopleIds) {
+            for (const rid of noReachedReporterIdsByPerson.get(pid) ?? []) ids.add(rid);
+          }
+          return [...ids];
+        })(),
+      ]);
+
+      const reporters = await Users.find({ _id: { $in: reporterIdsToFetch } })
+        .select("username")
+        .lean();
+      const usernameById = new Map(
+        reporters.map((u: any) => [u._id.toString(), u.username as string]),
+      );
+
+      const attendedPeopleDetail = (attendedPersons as any[]).map((p: any) => {
+        const pid = p._id.toString();
+        const reporterIds = attendedReporterIdsByPerson.get(pid) ?? new Set<string>();
+        const usernames = [...reporterIds].map((rid) => usernameById.get(rid)).filter(Boolean);
+        return {
+          name: String(p.name ?? "Unknown"),
+          phone: String(p.phone ?? ""),
+          submittedByUsernames: usernames as string[],
+        };
+      });
+
+      const noReachedPeopleDetail = (calledNoReachedPersons as any[]).map((p: any) => {
+        const pid = p._id.toString();
+        const reasonsSet = noReachedReasonsByPerson.get(pid) ?? new Set<string>();
+        const reasons = [...reasonsSet].slice(0, 4);
+        const reporterIds = noReachedReporterIdsByPerson.get(pid) ?? new Set<string>();
+        const usernames = [...reporterIds].map((rid) => usernameById.get(rid)).filter(Boolean);
+        return {
+          name: String(p.name ?? "Unknown"),
+          phone: String(p.phone ?? ""),
+          reasons,
+          submittedByUsernames: usernames as string[],
+        };
+      });
+
+      const notCalledAtAllPeopleDetail = (notCalledAtAllPersons as any[]).map((p: any) => ({
+        name: String(p.name ?? "Unknown"),
+        phone: String(p.phone ?? ""),
+      }));
+
+      const text = unitHeadFormatPlainText({
         period: payload.period,
-        scorecard: scorecard as unknown as Record<string, string | number>,
-        byMonth: byMonth as unknown as Array<
-          { monthLabel: string } & Record<string, string | number>
-        >,
-        methodology,
+        totalContacts: scorecard.activeContacts as number,
+        reportsExpected: scorecard.expectedWeeklyReports as number,
+        reportsSubmittedCalls: scorecard.weeklyReportsFiled as number,
+        reachedPeople: reachedPeopleCount,
+        noReachedPeople: calledNoReachedPeopleCount,
+        notCalledAtAllPeople: notCalledAtAllPeopleIds.length,
+        attendedPeople: attendedPeopleDetail,
+        noReachedPeopleDetail,
+        notCalledAtAllPeopleDetail,
       });
       res.setHeader("Content-Type", "text/plain; charset=utf-8");
       return res.send(text);
