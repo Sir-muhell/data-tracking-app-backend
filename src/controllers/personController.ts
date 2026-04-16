@@ -1562,7 +1562,7 @@ export const getLeadershipQuarterlyReport = async (
 
     const attendedPersonIds = new Set([...attendancePeople]);
     const calledNoReachedPeopleIds = [...calledButNoReachedPeople].filter(
-      (pid) => !attendedPersonIds.has(pid),
+      (pid) => !attendedPersonIds.has(pid) && !reachedPeople.has(pid),
     );
     const calledNoReachedPeopleCount = calledNoReachedPeopleIds.length;
     const notCalledAtAllPeopleIds = (validPersons as any[])
