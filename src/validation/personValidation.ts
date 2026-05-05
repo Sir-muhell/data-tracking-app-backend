@@ -46,6 +46,24 @@ export const reassignContactSchema = Joi.object({
     }),
 });
 
+export const bulkReassignContactsSchema = Joi.object({
+  assignedToUserId: Joi.string()
+    .trim()
+    .required()
+    .messages({
+      "string.empty": "Assigned user is required.",
+    }),
+  personIds: Joi.array()
+    .items(Joi.string().trim().required())
+    .min(1)
+    .required()
+    .messages({
+      "array.base": "personIds must be an array.",
+      "array.min": "Select at least one contact to reassign.",
+      "any.required": "personIds is required.",
+    }),
+});
+
 export const weeklyReportSchema = Joi.object({
   contacted: Joi.boolean().required()
     .messages({

@@ -21,6 +21,7 @@ import {
   archivePerson,
   unarchivePerson,
   reassignContact,
+  bulkReassignContacts,
   archiveContactsByDateRange,
   getLeadershipQuarterlyReport,
 } from "../controllers/personController";
@@ -255,6 +256,12 @@ router.delete("/:id", authenticateToken, deletePerson);
 router.patch("/:id/archive", authenticateToken, isAdmin, archivePerson);
 router.patch("/:id/unarchive", authenticateToken, isAdmin, unarchivePerson);
 router.patch("/:id/reassign", authenticateToken, isAdmin, reassignContact);
+router.patch(
+  "/reassign/bulk",
+  authenticateToken,
+  isAdmin,
+  bulkReassignContacts,
+);
 
 /**
  * @swagger

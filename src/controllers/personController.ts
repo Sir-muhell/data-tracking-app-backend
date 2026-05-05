@@ -7,6 +7,7 @@ import {
   personSchema,
   weeklyReportSchema,
   reassignContactSchema,
+  bulkReassignContactsSchema,
 } from "../validation/personValidation";
 import Users from "../models/Users";
 import logger from "../utils/logger";
@@ -2433,6 +2434,88 @@ export const reassignContact = async (
     res
       .status(500)
       .json({ message: "Server error: Could not reassign contact." });
+  }
+};
+
+export const bulkReassignContacts = async (
+  req: AuthenticatedRequest,
+  res: Response,
+) => {
+  if (req.role !== "admin") {
+    return res.status(403).json({ message: "Admin access required." });
+  }
+
+  const { error, value } = bulkReassignContactsSchema.validate(req.body);
+  if (error) {
+    return res.status(400).json({ message: error.details[0].message });
+  }
+  const { assignedToUserId, personIds } = value as {
+    assignedToUserId: string;
+    personIds: string[];
+  };
+
+  try {
+    if (!mongoose.Types.ObjectId.isValid(assignedToUserId)) {
+      return res.status(400).json({ message: "Invalid assigned user ID." });
+    }
+
+    const invalidPersonId = personIds.find(
+      (id) => !mongoose.Types.ObjectId.isValid(id),
+    );
+    if (invalidPersonId) {
+      return res
+        .status(400)
+        .json({ message: `Invalid person ID: ${invalidPersonId}` });
+    }
+
+    const uniquePersonIds = [...new Set(personIds)];
+    const personObjectIds = uniquePersonIds.map(
+      (id) => new mongoose.Types.ObjectId(id),
+    );
+
+    const newOwner = await Users.findById(assignedToUserId).select(
+      "_id username",
+    );
+    if (!newOwner) {
+      return res.status(404).json({ message: "Assigned user not found." });
+    }
+
+    const result = await Person.updateMany(
+      { _id: { $in: personObjectIds } },
+      { $set: { createdBy: assignedToUserId } },
+    );
+
+    if (result.matchedCount === 0) {
+      return res
+        .status(404)
+        .json({ message: "No matching contacts were found for reassignment." });
+    }
+
+    const persons = await Person.find({ _id: { $in: personObjectIds } })
+      .populate("createdBy", "username")
+      .lean();
+
+    logger.info("Contacts bulk reassigned", {
+      count: result.modifiedCount,
+      matchedCount: result.matchedCount,
+      assignedToUserId,
+      adminUserId: req.userId,
+    });
+    res.json({
+      message: `Successfully reassigned ${result.modifiedCount} contact(s).`,
+      reassignedCount: result.modifiedCount,
+      matchedCount: result.matchedCount,
+      persons,
+    });
+  } catch (err: any) {
+    logger.error("Error bulk reassigning contacts", {
+      error: err.message,
+      stack: err.stack,
+      userId: req.userId,
+    });
+    res
+      .status(500)
+      .json({ message: "Server error: Could not bulk reassign contacts." });
   }
 };
 
